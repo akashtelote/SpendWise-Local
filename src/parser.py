@@ -321,18 +321,20 @@ def process_pdf(pdf_path, passwords):
                     tried_passwords.add(pwd)
 
             if not success:
-                print(f"[FATAL] No valid password found for {filename} in passwords.json.")
+                print(f"[FATAL] No valid password found for {filename} in passwords.json. Bank Snippet: '{filename[:20]}' - Please verify bank type.")
                 return []
 
     if pdf_text:
         bank_name, ident_source_card = identify_bank_and_card(pdf_text)
-        if matched_key:
-            # If a password successfully unlocked the PDF, assign its corresponding key to Source_Card
-            source_card = matched_key
-        else:
+        if not matched_key:
             source_card = ident_source_card
 
+    if matched_key:
+        # If a password successfully unlocked the PDF, assign its corresponding key to Source_Card
+        source_card = matched_key
+
     parsed_rows = []
+    found_any_table = False
 
     try:
         with pdfplumber.open(pdf_path, password=password_to_use) as pdf:
@@ -340,8 +342,11 @@ def process_pdf(pdf_path, passwords):
                 try:
                     # Extract tables
                     tables = page.extract_tables()
-                    if page.page_number == 1 and not tables:
-                        print(f"[DEBUG] Decryption successful, but no table detected on Page 1 of {filename}. Check if PDF is image-only.")
+                    if not tables:
+                        tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
+
+                    if tables:
+                        found_any_table = True
 
                     for table in tables:
                         if bank_name == "HDFC":
@@ -354,6 +359,10 @@ def process_pdf(pdf_path, passwords):
                         parsed_rows.extend(rows)
                 except Exception as e:
                     print(f"Failed to process page in {filename}:\n{traceback.format_exc()}")
+
+            if not found_any_table:
+                print(f"[WARNING] {filename} appears to be an image. Skipping for now (requires OCR).")
+
     except DecryptionError:
         print(f"Failed to process {filename} due to password incorrect after fallback.")
     except Exception as e:
