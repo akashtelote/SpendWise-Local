@@ -14,6 +14,10 @@ load_dotenv()
 # Date | Description | Amount | Transaction_Type | Source_Card
 COLUMNS = ["Date", "Description", "Amount", "Transaction_Type", "Source_Card"]
 
+class DecryptionError(Exception):
+    """Raised when a PDF fails to decrypt due to an incorrect or missing password."""
+    pass
+
 def get_pdf_passwords():
     """Reads passwords from data/passwords.json, creating a template if it doesn't exist."""
     pwd_file = Path("data/passwords.json")
@@ -51,7 +55,12 @@ def extract_text_from_pdf(pdf_path, password=None):
             for i in range(min(2, len(pdf.pages))):
                 text += pdf.pages[i].extract_text() or ""
     except Exception as e:
-        print(f"Error reading text from {pdf_path}:\n{traceback.format_exc()}")
+        err_str = traceback.format_exc()
+        if "PDFPasswordIncorrect" in err_str:
+            raise DecryptionError(f"Password incorrect or missing for {pdf_path}")
+        else:
+            print(f"Error reading text from {pdf_path}:\n{err_str}")
+            raise
     return text
 
 def identify_bank_and_card(text):
@@ -264,37 +273,64 @@ def process_pdf(pdf_path, passwords):
     password_to_use = None
     pdf_text = ""
     is_encrypted = False
+    matched_key = None
 
     try:
         # Try without password first
         pdf_text = extract_text_from_pdf(pdf_path)
-    except Exception:
-        # If it fails, assume it is encrypted
+    except DecryptionError:
         is_encrypted = True
 
-    # If it is encrypted, find a matching password
     if is_encrypted:
-        matched_key = None
+        initial_password_failed = False
+        # Find an initial matching password
         for key, pwd in passwords.items():
-            if key in filename.lower():
+            if pwd != "ENTER_PASSWORD_HERE" and key in filename.lower():
                 password_to_use = pwd
                 matched_key = key
                 break
 
-        if not password_to_use or password_to_use == "ENTER_PASSWORD_HERE":
-            print(f"[SKIP] No valid password for: {filename}")
-            return []
+        if password_to_use:
+            print(f"[DEBUG] Attempting password key '{matched_key}' for file '{filename}'.")
+            try:
+                pdf_text = extract_text_from_pdf(pdf_path, password=password_to_use)
+                print(f"[SUCCESS] Decrypted '{filename}' using key '{matched_key}'.")
+            except DecryptionError:
+                initial_password_failed = True
+                print(f"[INFO] Initial password failed for {filename}. Trying all other known passwords...")
+        else:
+            print(f"[INFO] No pattern match for {filename}. Trying all known passwords...")
+            initial_password_failed = True
 
-        print(f"[DEBUG] Filename '{filename}' matched pattern '{matched_key}'. Attempting decryption...")
+        if initial_password_failed:
+            success = False
+            # Iterate through all unique passwords, skipping the one we just tried and placeholders
+            tried_passwords = {password_to_use} if password_to_use else set()
+            for key, pwd in passwords.items():
+                if pwd == "ENTER_PASSWORD_HERE" or pwd in tried_passwords:
+                    continue
 
-        # Try to extract text using the found password to verify and identify bank
-        pdf_text = extract_text_from_pdf(pdf_path, password=password_to_use)
-        if not pdf_text:
-            print(f"[SKIP] Decryption failed for {filename}")
-            return []
+                try:
+                    pdf_text = extract_text_from_pdf(pdf_path, password=pwd)
+                    password_to_use = pwd
+                    matched_key = key
+                    success = True
+                    print(f"[SUCCESS] Decrypted '{filename}' using key '{matched_key}'.")
+                    break
+                except DecryptionError:
+                    tried_passwords.add(pwd)
+
+            if not success:
+                print(f"[FATAL] No valid password found for {filename} in passwords.json.")
+                return []
 
     if pdf_text:
-        bank_name, source_card = identify_bank_and_card(pdf_text)
+        bank_name, ident_source_card = identify_bank_and_card(pdf_text)
+        if matched_key:
+            # If a password successfully unlocked the PDF, assign its corresponding key to Source_Card
+            source_card = matched_key
+        else:
+            source_card = ident_source_card
 
     parsed_rows = []
 
@@ -318,6 +354,8 @@ def process_pdf(pdf_path, passwords):
                         parsed_rows.extend(rows)
                 except Exception as e:
                     print(f"Failed to process page in {filename}:\n{traceback.format_exc()}")
+    except DecryptionError:
+        print(f"Failed to process {filename} due to password incorrect after fallback.")
     except Exception as e:
         print(f"Failed to process {filename}. Error:\n{traceback.format_exc()}")
 
