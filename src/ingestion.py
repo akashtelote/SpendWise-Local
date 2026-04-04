@@ -7,13 +7,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
-def download_statements(days=180):
+# Load environment variables
+load_dotenv()
+
+def download_statements(days=32):
     """
     Connect to Gmail via IMAP, search for emails with "Statement" in the subject
-    from the last `days` days, and download PDF attachments.
+    from the last `days` days (defaults to 32 days, approx. one billing cycle),
+    and download PDF attachments.
     """
-    # Load environment variables
-    load_dotenv()
+    print(f"Starting ingestion: Looking back {days} days.")
+
     email_user = os.getenv("EMAIL_USER")
     email_pass = os.getenv("EMAIL_APP_PASSWORD")
 
