@@ -1,8 +1,9 @@
-import os
 import json
 import re
+import traceback
 import pandas as pd
 import pdfplumber
+from pathlib import Path
 from fpdf import FPDF
 from dotenv import load_dotenv
 
@@ -15,9 +16,9 @@ COLUMNS = ["Date", "Description", "Amount", "Transaction_Type", "Source_Card"]
 
 def get_pdf_passwords():
     """Reads passwords from data/passwords.json, creating a template if it doesn't exist."""
-    pwd_file = "data/passwords.json"
+    pwd_file = Path("data/passwords.json")
 
-    if not os.path.exists(pwd_file):
+    if not pwd_file.exists():
         template = {
             "Amazon": "ENTER_PASSWORD_HERE",
             "Sapphiro": "ENTER_PASSWORD_HERE",
@@ -27,15 +28,16 @@ def get_pdf_passwords():
             "NEUCARD": "ENTER_PASSWORD_HERE",
             "Statement": "ENTER_PASSWORD_HERE"
         }
-        os.makedirs(os.path.dirname(pwd_file), exist_ok=True)
-        with open(pwd_file, "w") as f:
+        pwd_file.parent.mkdir(parents=True, exist_ok=True)
+        with pwd_file.open("w") as f:
             json.dump(template, f, indent=4)
         print(f"Created password template at {pwd_file}. Please update it with real passwords.")
         return template
 
     try:
-        with open(pwd_file, "r") as f:
-            return json.load(f)
+        with pwd_file.open("r") as f:
+            json_data = json.load(f)
+            return {k.strip().lower(): v.strip() for k, v in json_data.items()}
     except json.JSONDecodeError:
         print(f"Warning: Could not parse {pwd_file}. Ensure it is valid JSON.")
         return {}
@@ -49,7 +51,7 @@ def extract_text_from_pdf(pdf_path, password=None):
             for i in range(min(2, len(pdf.pages))):
                 text += pdf.pages[i].extract_text() or ""
     except Exception as e:
-        print(f"Error reading text from {pdf_path}: {e}")
+        print(f"Error reading text from {pdf_path}:\n{traceback.format_exc()}")
     return text
 
 def identify_bank_and_card(text):
@@ -251,7 +253,8 @@ def parse_generic_table(rows, source_card):
 
 def process_pdf(pdf_path, passwords):
     """Processes a single PDF file and returns a list of row dicts."""
-    filename = os.path.basename(pdf_path)
+    pdf_path = Path(pdf_path)
+    filename = pdf_path.name
     print(f"Processing {pdf_path}...")
 
     # First, try to read text to identify bank
@@ -271,14 +274,18 @@ def process_pdf(pdf_path, passwords):
 
     # If it is encrypted, find a matching password
     if is_encrypted:
+        matched_key = None
         for key, pwd in passwords.items():
-            if key in filename:
+            if key in filename.lower():
                 password_to_use = pwd
+                matched_key = key
                 break
 
         if not password_to_use or password_to_use == "ENTER_PASSWORD_HERE":
             print(f"[SKIP] No valid password for: {filename}")
             return []
+
+        print(f"[DEBUG] Filename '{filename}' matched pattern '{matched_key}'. Attempting decryption...")
 
         # Try to extract text using the found password to verify and identify bank
         pdf_text = extract_text_from_pdf(pdf_path, password=password_to_use)
@@ -297,6 +304,9 @@ def process_pdf(pdf_path, passwords):
                 try:
                     # Extract tables
                     tables = page.extract_tables()
+                    if page.page_number == 1 and not tables:
+                        print(f"[DEBUG] Decryption successful, but no table detected on Page 1 of {filename}. Check if PDF is image-only.")
+
                     for table in tables:
                         if bank_name == "HDFC":
                             rows = parse_hdfc_table(table, source_card)
@@ -307,9 +317,9 @@ def process_pdf(pdf_path, passwords):
 
                         parsed_rows.extend(rows)
                 except Exception as e:
-                    print(f"Failed to process page in {filename}: {e}")
+                    print(f"Failed to process page in {filename}:\n{traceback.format_exc()}")
     except Exception as e:
-        print(f"Failed to process {filename}. Error: {e}")
+        print(f"Failed to process {filename}. Error:\n{traceback.format_exc()}")
 
     return parsed_rows
 
@@ -320,8 +330,9 @@ def parse_all_pdfs(raw_dir="data/raw"):
     """
     from datetime import datetime, timedelta
 
-    if not os.path.exists(raw_dir):
-        print(f"Directory {raw_dir} does not exist.")
+    raw_dir_path = Path(raw_dir)
+    if not raw_dir_path.exists():
+        print(f"Directory {raw_dir_path} does not exist.")
         return pd.DataFrame(columns=COLUMNS)
 
     passwords = get_pdf_passwords()
@@ -329,9 +340,10 @@ def parse_all_pdfs(raw_dir="data/raw"):
 
     cutoff_date = datetime.now() - timedelta(days=32)
 
-    for filename in os.listdir(raw_dir):
-        if not filename.lower().endswith('.pdf'):
+    for file_path in raw_dir_path.iterdir():
+        if not file_path.name.lower().endswith('.pdf'):
             continue
+        filename = file_path.name
 
         # Extract YYYY-MM-DD from the beginning of the filename
         match = re.match(r'^(\d{4}-\d{2}-\d{2})', filename)
@@ -350,8 +362,7 @@ def parse_all_pdfs(raw_dir="data/raw"):
             print(f"[SKIP] File outside 32-day window: {filename}")
             continue
 
-        filepath = os.path.join(raw_dir, filename)
-        rows = process_pdf(filepath, passwords)
+        rows = process_pdf(file_path, passwords)
         all_data.extend(rows)
 
     df = pd.DataFrame(all_data, columns=COLUMNS)
@@ -393,7 +404,8 @@ def create_table_pdf(filename, title, headers, data):
 def generate_mock_pdfs(raw_dir="data/raw"):
     """Generates mock PDFs for testing."""
     from datetime import datetime
-    os.makedirs(raw_dir, exist_ok=True)
+    raw_dir_path = Path(raw_dir)
+    raw_dir_path.mkdir(parents=True, exist_ok=True)
 
     today_str = datetime.now().strftime("%Y-%m-%d")
 
@@ -404,7 +416,7 @@ def generate_mock_pdfs(raw_dir="data/raw"):
         ["05/04/23", "Salary", "", "05/04/23", "", "50,000.00", "60000.00"],
         ["10/04/23", "Grocery", "789012", "10/04/23", "200.50", "", "59799.50"]
     ]
-    create_table_pdf(os.path.join(raw_dir, f"{today_str}_mock_hdfc_statement.pdf"), "HDFC Bank Statement A/C 9999", hdfc_headers, hdfc_data)
+    create_table_pdf(str(raw_dir_path / f"{today_str}_mock_hdfc_statement.pdf"), "HDFC Bank Statement A/C 9999", hdfc_headers, hdfc_data)
 
     # ICICI Mock
     icici_headers = ["S No.", "Value Date", "Transaction Date", "Cheque Number", "Transaction Remarks", "Withdrawal Amount (INR )", "Deposit Amount (INR )", "Balance (INR )"]
@@ -416,7 +428,7 @@ def generate_mock_pdfs(raw_dir="data/raw"):
         ["16-05-2023", "UPI Transfer", "2000.00", "CR"],
         ["20-05-2023", "Swiggy", "450.00", "DR"]
     ]
-    create_table_pdf(os.path.join(raw_dir, f"{today_str}_mock_icici_statement.pdf"), "ICICI Bank Account 8888", icici_mock_headers, icici_mock_data)
+    create_table_pdf(str(raw_dir_path / f"{today_str}_mock_icici_statement.pdf"), "ICICI Bank Account 8888", icici_mock_headers, icici_mock_data)
 
     # Generic Mock
     generic_headers = ["Date", "Description", "Amount", "Balance"]
@@ -425,11 +437,11 @@ def generate_mock_pdfs(raw_dir="data/raw"):
         ["2023-06-02", "Refund", "500.00", "5500.00"],
         ["2023-06-05", "ATM", "-2000.00", "3500.00"]
     ]
-    create_table_pdf(os.path.join(raw_dir, f"{today_str}_mock_generic_statement.pdf"), "SomeBank Statement", generic_headers, generic_data)
+    create_table_pdf(str(raw_dir_path / f"{today_str}_mock_generic_statement.pdf"), "SomeBank Statement", generic_headers, generic_data)
 
 if __name__ == "__main__":
     RAW_DIR = "data/raw"
-    PROCESSED_DIR = "data/processed"
+    PROCESSED_DIR = Path("data/processed")
 
     print("Generating mock PDFs...")
     generate_mock_pdfs(RAW_DIR)
@@ -437,8 +449,8 @@ if __name__ == "__main__":
     print("Parsing PDFs...")
     df = parse_all_pdfs(RAW_DIR)
 
-    os.makedirs(PROCESSED_DIR, exist_ok=True)
-    out_path = os.path.join(PROCESSED_DIR, "raw_transactions.csv")
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = PROCESSED_DIR / "raw_transactions.csv"
     df.to_csv(out_path, index=False)
     print(f"Data saved to {out_path}")
     print("\nParsed Data Sample:")
