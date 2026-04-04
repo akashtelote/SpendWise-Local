@@ -14,12 +14,30 @@ load_dotenv()
 COLUMNS = ["Date", "Description", "Amount", "Transaction_Type", "Source_Card"]
 
 def get_pdf_passwords():
-    """Reads PDF_PASSWORDS from .env and parses it into a dictionary."""
-    passwords_str = os.getenv("PDF_PASSWORDS", "{}")
+    """Reads passwords from data/passwords.json, creating a template if it doesn't exist."""
+    pwd_file = "data/passwords.json"
+
+    if not os.path.exists(pwd_file):
+        template = {
+            "Amazon": "ENTER_PASSWORD_HERE",
+            "Sapphiro": "ENTER_PASSWORD_HERE",
+            "Millenia": "ENTER_PASSWORD_HERE",
+            "Rubyx": "ENTER_PASSWORD_HERE",
+            "BPCL": "ENTER_PASSWORD_HERE",
+            "NEUCARD": "ENTER_PASSWORD_HERE",
+            "Statement": "ENTER_PASSWORD_HERE"
+        }
+        os.makedirs(os.path.dirname(pwd_file), exist_ok=True)
+        with open(pwd_file, "w") as f:
+            json.dump(template, f, indent=4)
+        print(f"Created password template at {pwd_file}. Please update it with real passwords.")
+        return template
+
     try:
-        return json.loads(passwords_str)
+        with open(pwd_file, "r") as f:
+            return json.load(f)
     except json.JSONDecodeError:
-        print("Warning: Could not parse PDF_PASSWORDS from .env. Ensure it is valid JSON.")
+        print(f"Warning: Could not parse {pwd_file}. Ensure it is valid JSON.")
         return {}
 
 def extract_text_from_pdf(pdf_path, password=None):
@@ -233,13 +251,13 @@ def parse_generic_table(rows, source_card):
 
 def process_pdf(pdf_path, passwords):
     """Processes a single PDF file and returns a list of row dicts."""
+    filename = os.path.basename(pdf_path)
     print(f"Processing {pdf_path}...")
 
     # First, try to read text to identify bank
     bank_name = "Generic"
     source_card = "Generic"
 
-    # We might need to try multiple passwords
     password_to_use = None
     pdf_text = ""
     is_encrypted = False
@@ -247,51 +265,61 @@ def process_pdf(pdf_path, passwords):
     try:
         # Try without password first
         pdf_text = extract_text_from_pdf(pdf_path)
-    except Exception as e:
-        # If it fails, try with passwords
+    except Exception:
+        # If it fails, assume it is encrypted
         is_encrypted = True
-        pass
 
-    if not pdf_text and is_encrypted:
-        # Try passwords
-        for pwd in passwords.values():
-            pdf_text = extract_text_from_pdf(pdf_path, pwd)
-            if pdf_text:
+    # If it is encrypted, find a matching password
+    if is_encrypted:
+        for key, pwd in passwords.items():
+            if key in filename:
                 password_to_use = pwd
                 break
 
+        if not password_to_use or password_to_use == "ENTER_PASSWORD_HERE":
+            print(f"[SKIP] No valid password for: {filename}")
+            return []
+
+        # Try to extract text using the found password to verify and identify bank
+        pdf_text = extract_text_from_pdf(pdf_path, password=password_to_use)
+        if not pdf_text:
+            print(f"[SKIP] Decryption failed for {filename}")
+            return []
+
     if pdf_text:
         bank_name, source_card = identify_bank_and_card(pdf_text)
-
-    # Only assign bank password if we know it's encrypted and haven't found it yet
-    if is_encrypted and not password_to_use and bank_name in passwords:
-        password_to_use = passwords[bank_name]
 
     parsed_rows = []
 
     try:
         with pdfplumber.open(pdf_path, password=password_to_use) as pdf:
             for page in pdf.pages:
-                # Extract tables
-                tables = page.extract_tables()
-                for table in tables:
-                    if bank_name == "HDFC":
-                        rows = parse_hdfc_table(table, source_card)
-                    elif bank_name == "ICICI":
-                        rows = parse_icici_table(table, source_card)
-                    else:
-                        rows = parse_generic_table(table, source_card)
+                try:
+                    # Extract tables
+                    tables = page.extract_tables()
+                    for table in tables:
+                        if bank_name == "HDFC":
+                            rows = parse_hdfc_table(table, source_card)
+                        elif bank_name == "ICICI":
+                            rows = parse_icici_table(table, source_card)
+                        else:
+                            rows = parse_generic_table(table, source_card)
 
-                    parsed_rows.extend(rows)
+                        parsed_rows.extend(rows)
+                except Exception as e:
+                    print(f"Failed to process page in {filename}: {e}")
     except Exception as e:
-        print(f"Failed to process {pdf_path}. Error: {e}")
+        print(f"Failed to process {filename}. Error: {e}")
 
     return parsed_rows
 
 def parse_all_pdfs(raw_dir="data/raw"):
     """
     Iterates through all PDFs in raw_dir, parses them, and returns a unified DataFrame.
+    Filters out files not matching YYYY-MM-DD prefix or older than 32 days.
     """
+    from datetime import datetime, timedelta
+
     if not os.path.exists(raw_dir):
         print(f"Directory {raw_dir} does not exist.")
         return pd.DataFrame(columns=COLUMNS)
@@ -299,11 +327,32 @@ def parse_all_pdfs(raw_dir="data/raw"):
     passwords = get_pdf_passwords()
     all_data = []
 
+    cutoff_date = datetime.now() - timedelta(days=32)
+
     for filename in os.listdir(raw_dir):
-        if filename.lower().endswith('.pdf'):
-            filepath = os.path.join(raw_dir, filename)
-            rows = process_pdf(filepath, passwords)
-            all_data.extend(rows)
+        if not filename.lower().endswith('.pdf'):
+            continue
+
+        # Extract YYYY-MM-DD from the beginning of the filename
+        match = re.match(r'^(\d{4}-\d{2}-\d{2})', filename)
+        if not match:
+            print(f"[SKIP] Missing date prefix in filename: {filename}")
+            continue
+
+        file_date_str = match.group(1)
+        try:
+            file_date = datetime.strptime(file_date_str, "%Y-%m-%d")
+        except ValueError:
+            print(f"[SKIP] Invalid date prefix format in filename: {filename}")
+            continue
+
+        if file_date < cutoff_date:
+            print(f"[SKIP] File outside 32-day window: {filename}")
+            continue
+
+        filepath = os.path.join(raw_dir, filename)
+        rows = process_pdf(filepath, passwords)
+        all_data.extend(rows)
 
     df = pd.DataFrame(all_data, columns=COLUMNS)
     return df
@@ -343,7 +392,10 @@ def create_table_pdf(filename, title, headers, data):
 
 def generate_mock_pdfs(raw_dir="data/raw"):
     """Generates mock PDFs for testing."""
+    from datetime import datetime
     os.makedirs(raw_dir, exist_ok=True)
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
 
     # HDFC Mock
     hdfc_headers = ["Date", "Particulars", "Chq/Ref No.", "Value Date", "Withdrawal Amount", "Deposit Amount", "Closing Balance"]
@@ -352,7 +404,7 @@ def generate_mock_pdfs(raw_dir="data/raw"):
         ["05/04/23", "Salary", "", "05/04/23", "", "50,000.00", "60000.00"],
         ["10/04/23", "Grocery", "789012", "10/04/23", "200.50", "", "59799.50"]
     ]
-    create_table_pdf(os.path.join(raw_dir, "mock_hdfc_statement.pdf"), "HDFC Bank Statement A/C 9999", hdfc_headers, hdfc_data)
+    create_table_pdf(os.path.join(raw_dir, f"{today_str}_mock_hdfc_statement.pdf"), "HDFC Bank Statement A/C 9999", hdfc_headers, hdfc_data)
 
     # ICICI Mock
     icici_headers = ["S No.", "Value Date", "Transaction Date", "Cheque Number", "Transaction Remarks", "Withdrawal Amount (INR )", "Deposit Amount (INR )", "Balance (INR )"]
@@ -364,7 +416,7 @@ def generate_mock_pdfs(raw_dir="data/raw"):
         ["16-05-2023", "UPI Transfer", "2000.00", "CR"],
         ["20-05-2023", "Swiggy", "450.00", "DR"]
     ]
-    create_table_pdf(os.path.join(raw_dir, "mock_icici_statement.pdf"), "ICICI Bank Account 8888", icici_mock_headers, icici_mock_data)
+    create_table_pdf(os.path.join(raw_dir, f"{today_str}_mock_icici_statement.pdf"), "ICICI Bank Account 8888", icici_mock_headers, icici_mock_data)
 
     # Generic Mock
     generic_headers = ["Date", "Description", "Amount", "Balance"]
@@ -373,7 +425,7 @@ def generate_mock_pdfs(raw_dir="data/raw"):
         ["2023-06-02", "Refund", "500.00", "5500.00"],
         ["2023-06-05", "ATM", "-2000.00", "3500.00"]
     ]
-    create_table_pdf(os.path.join(raw_dir, "mock_generic_statement.pdf"), "SomeBank Statement", generic_headers, generic_data)
+    create_table_pdf(os.path.join(raw_dir, f"{today_str}_mock_generic_statement.pdf"), "SomeBank Statement", generic_headers, generic_data)
 
 if __name__ == "__main__":
     RAW_DIR = "data/raw"
