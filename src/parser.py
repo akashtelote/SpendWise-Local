@@ -163,18 +163,33 @@ def parse_icici_cc_table(rows, source_card):
     Parses ICICI CC tables.
     """
     parsed_data = []
-    headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+
+    # Header normalization
+    headers = [" ".join(str(h).replace('\n', ' ').split()).lower() if h is not None else "" for h in rows[0]]
 
     date_idx = next((i for i, h in enumerate(headers) if 'date' in h), 0)
     desc_idx = next((i for i, h in enumerate(headers) if 'description' in h or 'particulars' in h or 'transaction details' in h), 1)
     amt_idx = next((i for i, h in enumerate(headers) if 'amount' in h), 2)
     type_idx = next((i for i, h in enumerate(headers) if 'dr/cr' in h or 'type' in h), -1)
 
+    def validate_row(row_data):
+        for cell in row_data:
+            if cell is None:
+                continue
+            match = re.search(r'\d{2}/\d{2}/\d{4}', str(cell))
+            if match:
+                return match.group(0)
+        return None
+
     for row in rows[1:]:
-        if not row or row[date_idx] is None or not str(row[date_idx]).strip():
+        if not row:
             continue
 
-        date = str(row[date_idx]).strip()
+        extracted_date = validate_row(row)
+        if not extracted_date:
+            continue
+
+        date = extracted_date
         desc = str(row[desc_idx]).strip() if len(row) > desc_idx and row[desc_idx] else ""
         amt_str = str(row[amt_idx]).strip() if len(row) > amt_idx and row[amt_idx] else ""
         type_str = str(row[type_idx]).strip().upper() if type_idx != -1 and len(row) > type_idx and row[type_idx] else ""
@@ -500,11 +515,20 @@ def process_pdf(pdf_path, passwords):
                         "minimum amount due", "scenario a", "scenario a/b", "gst entry"
                     ]
 
+                    global_junk_keywords = ["illustration", "assume", "scenario"]
+
                     for table in tables:
                         if not table or not table[0]:
                             continue
 
-                        header_row = [str(h).strip().lower() if h is not None else "" for h in table[0]]
+                        # Global Table Content Filter
+                        table_content = " ".join(str(cell).lower() for row in table for cell in row if cell is not None)
+                        if any(junk in table_content for junk in global_junk_keywords):
+                            print(f"[DEBUG] Skipping junk table on page {i+1} containing global junk keywords in content.")
+                            continue
+
+                        # Normalize header row to match 'Transaction Details' and other split headers robustly
+                        header_row = [" ".join(str(h).replace('\n', ' ').split()).lower() if h is not None else "" for h in table[0]]
                         if any(any(junk in header_cell for junk in junk_keywords) for header_cell in header_row):
                             print(f"[DEBUG] Skipping junk table on page {i+1} containing keywords in header.")
                             continue
