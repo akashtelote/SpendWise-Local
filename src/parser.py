@@ -85,16 +85,19 @@ def identify_bank_and_card(text):
     return bank_name, card_suffix
 
 def clean_amount(amount_str):
-    """Strips non-numeric characters (except decimals) and converts to float."""
+    """Strips non-numeric characters (except decimals), detects 'CR' for Credit, and converts to float."""
     if pd.isna(amount_str) or not str(amount_str).strip():
-        return 0.0
+        return 0.0, False
 
-    # Remove commas and currency symbols
-    cleaned = re.sub(r'[^\d.]', '', str(amount_str))
+    amt_str = str(amount_str).strip().upper()
+    is_credit = "CR" in amt_str
+
+    # Remove commas, currency symbols, and text like CR
+    cleaned = re.sub(r'[^\d.]', '', amt_str)
     try:
-        return float(cleaned)
+        return float(cleaned), is_credit
     except ValueError:
-        return 0.0
+        return 0.0, is_credit
 
 def parse_hdfc_table(rows, source_card):
     """
@@ -125,11 +128,11 @@ def parse_hdfc_table(rows, source_card):
 
         # If there's a value in debit, it's a debit
         if debit_val and any(c.isdigit() for c in debit_val):
-            amount = clean_amount(debit_val)
-            txn_type = "Debit"
+            amount, is_credit = clean_amount(debit_val)
+            txn_type = "Credit" if is_credit else "Debit"
         # If there's a value in credit, it's a credit
         elif credit_val and any(c.isdigit() for c in credit_val):
-            amount = clean_amount(credit_val)
+            amount, is_credit = clean_amount(credit_val)
             txn_type = "Credit"
 
         try:
@@ -171,10 +174,10 @@ def parse_icici_table(rows, source_card):
         amt_str = str(row[amt_idx]).strip() if len(row) > amt_idx and row[amt_idx] else ""
         type_str = str(row[type_idx]).strip().upper() if len(row) > type_idx and row[type_idx] else ""
 
-        amount = clean_amount(amt_str)
+        amount, is_credit = clean_amount(amt_str)
 
         txn_type = "Debit" # Default
-        if "CR" in type_str:
+        if "CR" in type_str or is_credit:
             txn_type = "Credit"
         elif "DR" in type_str:
             txn_type = "Debit"
@@ -232,17 +235,19 @@ def parse_generic_table(rows, source_card):
             debit_val = str(row[debit_idx]).strip() if len(row) > debit_idx and row[debit_idx] else ""
             credit_val = str(row[credit_idx]).strip() if len(row) > credit_idx and row[credit_idx] else ""
             if debit_val and any(c.isdigit() for c in debit_val):
-                amount = clean_amount(debit_val)
-                txn_type = "Debit"
+                amount, is_credit = clean_amount(debit_val)
+                txn_type = "Credit" if is_credit else "Debit"
             elif credit_val and any(c.isdigit() for c in credit_val):
-                amount = clean_amount(credit_val)
+                amount, is_credit = clean_amount(credit_val)
                 txn_type = "Credit"
         elif amt_idx != -1:
             # Simple amount, try to check sign or just assume Debit
             amt_str = str(row[amt_idx]).strip() if len(row) > amt_idx and row[amt_idx] else ""
+            amount, is_credit = clean_amount(amt_str)
             if amt_str.startswith('-'):
                 txn_type = "Debit" # Sometimes negative is debit
-            amount = clean_amount(amt_str)
+            elif is_credit:
+                txn_type = "Credit"
 
         try:
             date_parsed = pd.to_datetime(date, dayfirst=True).strftime('%Y-%m-%d')
@@ -346,12 +351,32 @@ def process_pdf(pdf_path, passwords):
                     # Extract tables
                     tables = page.extract_tables()
                     if not tables:
-                        tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
+                        if i == 0:
+                            # Page 1 specific fallbacks
+                            tables = page.extract_tables(table_settings={"vertical_strategy": "lines", "horizontal_strategy": "lines", "snap_tolerance": 3})
+                            if not tables:
+                                tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
+                            if not tables:
+                                bottom_half = page.crop((0, page.height / 2, page.width, page.height))
+                                tables = bottom_half.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
+                        else:
+                            # Standard fallback for other pages
+                            tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
 
                     if tables:
                         found_any_table = True
 
+                    junk_keywords = ["illustration", "late payment charges", "method of payment"]
+
                     for table in tables:
+                        if not table or not table[0]:
+                            continue
+
+                        header_row = [str(h).strip().lower() if h is not None else "" for h in table[0]]
+                        if any(any(junk in header_cell for junk in junk_keywords) for header_cell in header_row):
+                            print(f"[DEBUG] Skipping junk table on page {i+1} containing keywords in header.")
+                            continue
+
                         if bank_name == "HDFC":
                             rows = parse_hdfc_table(table, source_card)
                         elif bank_name == "ICICI":

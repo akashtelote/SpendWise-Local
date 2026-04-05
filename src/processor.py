@@ -116,7 +116,7 @@ def process_and_store(df: pd.DataFrame):
     # Calculate actual inserted rows based on total_changes diff
     inserted_rows = conn.total_changes - initial_changes
 
-    print(f"Successfully added {inserted_rows} new transactions to the database.")
+    print(f"[DATABASE] Successfully added {inserted_rows} new transactions to the database.")
 
     conn.close()
 
