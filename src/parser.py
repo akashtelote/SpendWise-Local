@@ -63,17 +63,24 @@ def extract_text_from_pdf(pdf_path, password=None):
             raise
     return text
 
-def identify_bank_and_card(text):
+def identify_bank_and_card(text, filename=""):
     """
     Identifies the bank and extracts the last 4 digits of the card/account number.
     Returns (bank_name, card_suffix).
     """
     text_upper = text.upper()
+    filename_upper = filename.upper()
+
     bank_name = "Generic"
     if "HDFC" in text_upper:
         bank_name = "HDFC"
     elif "ICICI" in text_upper:
-        bank_name = "ICICI"
+        if "263570044" in text_upper or "SAVINGS A/C" in text_upper:
+            bank_name = "ICICI Savings"
+        else:
+            bank_name = "ICICI CC"
+    elif "SBI CARD" in text_upper or "BPCL" in filename_upper:
+        bank_name = "SBI"
 
     # Attempt to find account/card number pattern: looks for Account No, Card No, etc., followed by digits
     # Simple regex to find 4 digits that might represent an account/card suffix
@@ -90,7 +97,7 @@ def clean_amount(amount_str):
         return 0.0, False
 
     amt_str = str(amount_str).strip().upper()
-    is_credit = "CR" in amt_str
+    is_credit = "CR" in amt_str or amt_str.endswith(" CR") or " CR" in amt_str
 
     # Remove commas, currency symbols, and text like CR
     cleaned = re.sub(r'[^\d.]', '', amt_str)
@@ -151,19 +158,17 @@ def parse_hdfc_table(rows, source_card):
 
     return parsed_data
 
-def parse_icici_table(rows, source_card):
+def parse_icici_cc_table(rows, source_card):
     """
-    Parses ICICI tables.
-    Assumes columns: Date | Description | Amount | Dr/Cr
-    We split Amount and Dr/Cr indicator into Amount and Transaction_Type.
+    Parses ICICI CC tables.
     """
     parsed_data = []
     headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
 
     date_idx = next((i for i, h in enumerate(headers) if 'date' in h), 0)
-    desc_idx = next((i for i, h in enumerate(headers) if 'description' in h or 'particulars' in h), 1)
+    desc_idx = next((i for i, h in enumerate(headers) if 'description' in h or 'particulars' in h or 'transaction details' in h), 1)
     amt_idx = next((i for i, h in enumerate(headers) if 'amount' in h), 2)
-    type_idx = next((i for i, h in enumerate(headers) if 'dr/cr' in h or 'type' in h), 3)
+    type_idx = next((i for i, h in enumerate(headers) if 'dr/cr' in h or 'type' in h), -1)
 
     for row in rows[1:]:
         if not row or row[date_idx] is None or not str(row[date_idx]).strip():
@@ -172,7 +177,7 @@ def parse_icici_table(rows, source_card):
         date = str(row[date_idx]).strip()
         desc = str(row[desc_idx]).strip() if len(row) > desc_idx and row[desc_idx] else ""
         amt_str = str(row[amt_idx]).strip() if len(row) > amt_idx and row[amt_idx] else ""
-        type_str = str(row[type_idx]).strip().upper() if len(row) > type_idx and row[type_idx] else ""
+        type_str = str(row[type_idx]).strip().upper() if type_idx != -1 and len(row) > type_idx and row[type_idx] else ""
 
         amount, is_credit = clean_amount(amt_str)
 
@@ -181,6 +186,103 @@ def parse_icici_table(rows, source_card):
             txn_type = "Credit"
         elif "DR" in type_str:
             txn_type = "Debit"
+
+        try:
+            date_parsed = pd.to_datetime(date, dayfirst=True).strftime('%Y-%m-%d')
+        except Exception:
+            date_parsed = date
+
+        if amount > 0:
+            parsed_data.append({
+                "Date": date_parsed,
+                "Description": desc,
+                "Amount": amount,
+                "Transaction_Type": txn_type,
+                "Source_Card": source_card
+            })
+
+    return parsed_data
+
+def parse_icici_savings_table(rows, source_card):
+    """
+    Parses ICICI Savings tables.
+    """
+    parsed_data = []
+    headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+
+    date_idx = next((i for i, h in enumerate(headers) if 'date' in h), 0)
+    desc_idx = next((i for i, h in enumerate(headers) if 'particulars' in h or 'description' in h), 1)
+    withdraw_idx = next((i for i, h in enumerate(headers) if 'withdrawals' in h or 'withdrawal' in h or 'debit' in h), 2)
+    deposit_idx = next((i for i, h in enumerate(headers) if 'deposits' in h or 'deposit' in h or 'credit' in h), 3)
+
+    for row in rows[1:]:
+        if not row or row[date_idx] is None or not str(row[date_idx]).strip():
+            continue
+
+        date = str(row[date_idx]).strip()
+        desc = str(row[desc_idx]).strip() if len(row) > desc_idx and row[desc_idx] else ""
+        withdraw_str = str(row[withdraw_idx]).strip() if len(row) > withdraw_idx and row[withdraw_idx] else ""
+        deposit_str = str(row[deposit_idx]).strip() if len(row) > deposit_idx and row[deposit_idx] else ""
+
+        amount = 0.0
+        txn_type = ""
+
+        if withdraw_str and any(c.isdigit() for c in withdraw_str):
+            amount, is_credit = clean_amount(withdraw_str)
+            txn_type = "Credit" if is_credit else "Debit"
+        elif deposit_str and any(c.isdigit() for c in deposit_str):
+            amount, is_credit = clean_amount(deposit_str)
+            txn_type = "Credit"
+
+        try:
+            date_parsed = pd.to_datetime(date, dayfirst=True).strftime('%Y-%m-%d')
+        except Exception:
+            date_parsed = date
+
+        if amount > 0:
+            parsed_data.append({
+                "Date": date_parsed,
+                "Description": desc,
+                "Amount": amount,
+                "Transaction_Type": txn_type,
+                "Source_Card": source_card
+            })
+
+    return parsed_data
+
+def parse_sbi_table(rows, source_card):
+    """
+    Parses SBI tables.
+    """
+    parsed_data = []
+    headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+
+    date_idx = next((i for i, h in enumerate(headers) if 'date' in h), 0)
+    desc_idx = next((i for i, h in enumerate(headers) if 'transaction details' in h or 'description' in h), 1)
+    amt_idx = next((i for i, h in enumerate(headers) if 'amount' in h), -1)
+
+    if amt_idx == -1:
+        # Fallback if we couldn't find 'amount' directly
+        amt_idx = len(headers) - 1
+
+    cleanup_keywords = ["previous balance", "total outstanding", "minimum amount due"]
+
+    for row in rows[1:]:
+        if not row or row[date_idx] is None or not str(row[date_idx]).strip():
+            continue
+
+        date = str(row[date_idx]).strip()
+        desc = str(row[desc_idx]).strip() if len(row) > desc_idx and row[desc_idx] else ""
+
+        # Cleanup filter for SBI
+        desc_lower = desc.lower()
+        if any(kw in desc_lower for kw in cleanup_keywords):
+            continue
+
+        amt_str = str(row[amt_idx]).strip() if len(row) > amt_idx and row[amt_idx] else ""
+
+        amount, is_credit = clean_amount(amt_str)
+        txn_type = "Credit" if is_credit else "Debit"
 
         try:
             date_parsed = pd.to_datetime(date, dayfirst=True).strftime('%Y-%m-%d')
@@ -330,7 +432,7 @@ def process_pdf(pdf_path, passwords):
                 return []
 
     if pdf_text:
-        bank_name, ident_source_card = identify_bank_and_card(pdf_text)
+        bank_name, ident_source_card = identify_bank_and_card(pdf_text, filename)
         if not matched_key:
             source_card = ident_source_card
 
@@ -349,24 +451,54 @@ def process_pdf(pdf_path, passwords):
                 rows_on_page = 0
                 try:
                     # Extract tables
-                    tables = page.extract_tables()
+                    tables = []
+
+                    if bank_name == "ICICI CC" and i == 0:
+                        # Find "CREDIT SUMMARY" to crop page 1
+                        words = page.extract_words()
+                        credit_summary_y = None
+                        for w in words:
+                            if w['text'] == "CREDIT" or w['text'] == "SUMMARY":
+                                # Very basic check - we can check a combination
+                                pass
+
+                        # Better: search text for "CREDIT SUMMARY" and find bounding box of the whole block or words
+                        for w_idx, w in enumerate(words):
+                            if w['text'].upper() == "CREDIT" and w_idx + 1 < len(words) and words[w_idx+1]['text'].upper() == "SUMMARY":
+                                credit_summary_y = w['bottom']
+                                break
+
+                        if credit_summary_y:
+                            cropped_page = page.crop((0, credit_summary_y, page.width, page.height))
+                            tables = cropped_page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text", "snap_tolerance": 5})
+                        else:
+                            # Fallback if not found
+                            tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text", "snap_tolerance": 5})
+                    elif bank_name == "SBI":
+                        tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
+                    else:
+                        tables = page.extract_tables()
+
                     if not tables:
-                        if i == 0:
-                            # Page 1 specific fallbacks
+                        if i == 0 and bank_name != "ICICI CC":
+                            # Page 1 specific fallbacks for non-ICICI CC
                             tables = page.extract_tables(table_settings={"vertical_strategy": "lines", "horizontal_strategy": "lines", "snap_tolerance": 3})
                             if not tables:
                                 tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
                             if not tables:
                                 bottom_half = page.crop((0, page.height / 2, page.width, page.height))
                                 tables = bottom_half.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
-                        else:
+                        elif bank_name != "ICICI CC":
                             # Standard fallback for other pages
                             tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
 
                     if tables:
                         found_any_table = True
 
-                    junk_keywords = ["illustration", "late payment charges", "method of payment"]
+                    junk_keywords = [
+                        "illustration", "late payment charges", "method of payment",
+                        "minimum amount due", "scenario a", "scenario a/b", "gst entry"
+                    ]
 
                     for table in tables:
                         if not table or not table[0]:
@@ -377,10 +509,19 @@ def process_pdf(pdf_path, passwords):
                             print(f"[DEBUG] Skipping junk table on page {i+1} containing keywords in header.")
                             continue
 
+                        # Specific profile checks
+                        if bank_name == "SBI":
+                            if not any("transaction details" in header_cell for header_cell in header_row):
+                                continue
+
                         if bank_name == "HDFC":
                             rows = parse_hdfc_table(table, source_card)
-                        elif bank_name == "ICICI":
-                            rows = parse_icici_table(table, source_card)
+                        elif bank_name == "ICICI CC":
+                            rows = parse_icici_cc_table(table, source_card)
+                        elif bank_name == "ICICI Savings":
+                            rows = parse_icici_savings_table(table, source_card)
+                        elif bank_name == "SBI":
+                            rows = parse_sbi_table(table, source_card)
                         else:
                             rows = parse_generic_table(table, source_card)
 

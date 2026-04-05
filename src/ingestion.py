@@ -1,10 +1,10 @@
-import os
 import imaplib
 import email
 from email.header import decode_header
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta
 from pathlib import Path
+import os
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -18,8 +18,8 @@ def download_statements(days=32):
     """
     print(f"Starting ingestion: Looking back {days} days.")
 
-    email_user = os.getenv("EMAIL_USER")
-    email_pass = os.getenv("EMAIL_APP_PASSWORD")
+    email_user = os.environ.get("EMAIL_USER")
+    email_pass = os.environ.get("EMAIL_APP_PASSWORD")
 
     if not email_user or not email_pass:
         print("Error: EMAIL_USER or EMAIL_APP_PASSWORD not set in environment.")
