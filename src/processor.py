@@ -70,6 +70,9 @@ def process_and_store(df: pd.DataFrame):
     # 1. Rename columns to lowercase
     df.columns = [col.lower() for col in df.columns]
 
+    print("[DEBUG] First 3 rows being sent to DB:")
+    print(df[['date', 'description', 'amount']].head(3))
+
     # 2. Categorization
     mapping = load_mapping()
     df['category'] = df['description'].apply(lambda x: categorize_transaction(x, mapping))
@@ -117,6 +120,9 @@ def process_and_store(df: pd.DataFrame):
 
     # Calculate actual inserted rows based on total_changes diff
     inserted_rows = conn.total_changes - initial_changes
+
+    if inserted_rows == 0 and len(df) > 0:
+        print(f"[DEBUG] All {len(df)} transactions already exist in the database (Hash Match)..")
 
     print(f"[DATABASE] Successfully added {inserted_rows} new transactions to the database.")
 
