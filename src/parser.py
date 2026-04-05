@@ -147,6 +147,11 @@ def parse_hdfc_table(rows, source_card):
         except Exception:
             date_parsed = date
 
+        # HDFC Refinement: Ignore rows that are just GST entries (e.g., 'SGST-VPS') if they lack a clear merchant description
+        desc_lower = desc.lower()
+        if desc_lower in ["sgst-vps", "igst-vps", "cgst-vps", "sgst", "igst", "cgst"]:
+            continue
+
         if amount > 0:
             parsed_data.append({
                 "Date": date_parsed,
@@ -169,7 +174,16 @@ def parse_icici_cc_table(rows, source_card):
 
     date_idx = next((i for i, h in enumerate(headers) if 'date' in h), 0)
     desc_idx = next((i for i, h in enumerate(headers) if 'description' in h or 'particulars' in h or 'transaction details' in h), 1)
-    amt_idx = next((i for i, h in enumerate(headers) if 'amount' in h), 2)
+
+    # Refined Column Mapping: prioritize 'amount (int)' or 'amount(rs.)' over just 'amount'
+    amt_idx = -1
+    for i, h in enumerate(headers):
+        if 'amount (int)' in h or 'amount(rs.)' in h:
+            amt_idx = i
+            break
+    if amt_idx == -1:
+        amt_idx = next((i for i, h in enumerate(headers) if 'amount' in h), 2)
+
     type_idx = next((i for i, h in enumerate(headers) if 'dr/cr' in h or 'type' in h), -1)
 
     def validate_row(row_data):
@@ -274,13 +288,20 @@ def parse_sbi_table(rows, source_card):
 
     date_idx = next((i for i, h in enumerate(headers) if 'date' in h), 0)
     desc_idx = next((i for i, h in enumerate(headers) if 'transaction details' in h or 'description' in h), 1)
-    amt_idx = next((i for i, h in enumerate(headers) if 'amount' in h), -1)
+
+    amt_idx = -1
+    for i, h in enumerate(headers):
+        if 'amount (int)' in h or 'amount(rs.)' in h:
+            amt_idx = i
+            break
+    if amt_idx == -1:
+        amt_idx = next((i for i, h in enumerate(headers) if 'amount' in h), -1)
 
     if amt_idx == -1:
         # Fallback if we couldn't find 'amount' directly
         amt_idx = len(headers) - 1
 
-    cleanup_keywords = ["previous balance", "total outstanding", "minimum amount due"]
+    cleanup_keywords = ["previous balance", "total outstanding", "minimum amount due", "account summary"]
 
     for row in rows[1:]:
         if not row or row[date_idx] is None or not str(row[date_idx]).strip():
@@ -292,6 +313,9 @@ def parse_sbi_table(rows, source_card):
         # Cleanup filter for SBI
         desc_lower = desc.lower()
         if any(kw in desc_lower for kw in cleanup_keywords):
+            # If we hit an account summary section, often it marks the end of transactions in the table block
+            if "account summary" in desc_lower:
+                break
             continue
 
         amt_str = str(row[amt_idx]).strip() if len(row) > amt_idx and row[amt_idx] else ""
@@ -335,7 +359,13 @@ def parse_generic_table(rows, source_card):
     credit_idx = next((i for i, h in enumerate(headers) if 'credit' in h or 'deposit' in h), -1)
 
     # Or just a single amount column
-    amt_idx = next((i for i, h in enumerate(headers) if 'amount' in h), -1)
+    amt_idx = -1
+    for i, h in enumerate(headers):
+        if 'amount (int)' in h or 'amount(rs.)' in h:
+            amt_idx = i
+            break
+    if amt_idx == -1:
+        amt_idx = next((i for i, h in enumerate(headers) if 'amount' in h), -1)
 
     for row in rows[1:]:
         if not row or row[date_idx] is None or not str(row[date_idx]).strip():
@@ -489,6 +519,42 @@ def process_pdf(pdf_path, passwords):
                         else:
                             # Fallback if not found
                             tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text", "snap_tolerance": 5})
+
+                        # ICICI CC Regex Fallback
+                        if not tables or len(tables) == 0:
+                            page_text = page.extract_text()
+                            if page_text:
+                                regex = r'(\d{2}/\d{2}/\d{4})\s+(.*?)\s+([\d,]+\.\d{2}(?:\s*CR)?)'
+                                for line in page_text.split('\n'):
+                                    match = re.search(regex, line)
+                                    if match:
+                                        date_str = match.group(1)
+                                        desc = match.group(2).strip()
+                                        amt_str = match.group(3)
+
+                                        amount, is_credit = clean_amount(amt_str)
+                                        txn_type = "Credit" if "CR" in amt_str.upper() else "Debit"
+
+                                        try:
+                                            date_parsed = pd.to_datetime(date_str, dayfirst=True).strftime('%Y-%m-%d')
+                                        except Exception:
+                                            date_parsed = date_str
+
+                                        if amount > 0:
+                                            # Apply Global Row Validator to regex fallback
+                                            desc_lower = desc.lower()
+                                            global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due']
+                                            if not any(junk in desc_lower for junk in global_row_junk_keywords):
+                                                parsed_rows.append({
+                                                    "Date": date_parsed,
+                                                    "Description": desc,
+                                                    "Amount": amount,
+                                                    "Transaction_Type": txn_type,
+                                                    "Source_Card": source_card
+                                                })
+                                                rows_on_page += 1
+                                            found_any_table = True
+
                     elif bank_name == "SBI":
                         tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
                     else:
@@ -549,8 +615,16 @@ def process_pdf(pdf_path, passwords):
                         else:
                             rows = parse_generic_table(table, source_card)
 
-                        parsed_rows.extend(rows)
-                        rows_on_page += len(rows)
+                        # Global Row Validator: Discard row if Description contains 'LIMIT', 'BALANCE', 'TOTAL', 'OUTSTANDING', or 'DUE'
+                        valid_rows = []
+                        global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due']
+                        for row in rows:
+                            desc_lower = str(row.get("Description", "")).lower()
+                            if not any(junk in desc_lower for junk in global_row_junk_keywords):
+                                valid_rows.append(row)
+
+                        parsed_rows.extend(valid_rows)
+                        rows_on_page += len(valid_rows)
 
                     print(f"[DEBUG] Extracted {rows_on_page} rows from Page {i+1}..")
                 except Exception as e:
