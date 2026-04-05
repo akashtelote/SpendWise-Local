@@ -62,7 +62,7 @@ def generate_hash(row):
 def process_and_store(df: pd.DataFrame):
     """Processes the DataFrame and stores it in the SQLite database."""
     if df.empty:
-        print("DataFrame is empty. Nothing to process.")
+        print("[WARNING] No data to process. Database update skipped.")
         return
 
     # 1. Rename columns to lowercase
@@ -94,6 +94,9 @@ def process_and_store(df: pd.DataFrame):
             transaction_type TEXT
         )
     ''')
+
+    # 3.5 Schema Alignment - Force Numeric Amount
+    df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0.0)
 
     # Upsert logic: INSERT OR IGNORE
     # We'll use executemany for efficiency

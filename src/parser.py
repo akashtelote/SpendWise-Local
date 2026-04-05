@@ -338,7 +338,10 @@ def process_pdf(pdf_path, passwords):
 
     try:
         with pdfplumber.open(pdf_path, password=password_to_use) as pdf:
-            for page in pdf.pages:
+            total_pages = len(pdf.pages)
+            for i, page in enumerate(pdf.pages):
+                print(f"[DEBUG] Scanning Page {i+1}/{total_pages} of {filename}....")
+                rows_on_page = 0
                 try:
                     # Extract tables
                     tables = page.extract_tables()
@@ -357,8 +360,11 @@ def process_pdf(pdf_path, passwords):
                             rows = parse_generic_table(table, source_card)
 
                         parsed_rows.extend(rows)
+                        rows_on_page += len(rows)
+
+                    print(f"[DEBUG] Extracted {rows_on_page} rows from Page {i+1}..")
                 except Exception as e:
-                    print(f"Failed to process page in {filename}:\n{traceback.format_exc()}")
+                    print(f"Failed to process page {i+1} in {filename}:\n{traceback.format_exc()}")
 
             if not found_any_table:
                 print(f"[WARNING] {filename} appears to be an image. Skipping for now (requires OCR).")
@@ -375,8 +381,10 @@ def parse_all_pdfs(raw_dir="data/raw"):
     Iterates through all PDFs in raw_dir, parses them, and returns a unified DataFrame.
     Filters out files not matching YYYY-MM-DD prefix or older than 32 days.
     """
+    import time
     from datetime import datetime, timedelta
 
+    start_time = time.time()
     raw_dir_path = Path(raw_dir)
     if not raw_dir_path.exists():
         print(f"Directory {raw_dir_path} does not exist.")
@@ -413,6 +421,10 @@ def parse_all_pdfs(raw_dir="data/raw"):
         all_data.extend(rows)
 
     df = pd.DataFrame(all_data, columns=COLUMNS)
+
+    total_time = time.time() - start_time
+    print(f"[SUMMARY] Parser completed in {total_time:.2f} seconds. Total rows: {len(df)}.")
+
     return df
 
 def create_table_pdf(filename, title, headers, data):
