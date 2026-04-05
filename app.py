@@ -3,16 +3,16 @@ import pandas as pd
 import sqlite3
 import plotly.express as px
 import plotly.graph_objects as go
-import os
+from pathlib import Path
 
 # Set page configuration
 st.set_page_config(page_title="SpendWise Local", layout="wide")
 
-DB_PATH = "data/processed/expenses.db"
+DB_PATH = Path("data/processed/expenses.db")
 
 @st.cache_data
 def load_data():
-    if not os.path.exists(DB_PATH):
+    if not DB_PATH.exists():
         return pd.DataFrame()
 
     conn = sqlite3.connect(DB_PATH)
@@ -39,19 +39,24 @@ def run_pipeline():
             src.ingestion.download_statements()
 
             st.toast("Parsing PDFs...")
-            src.parser.parse_all_pdfs()
+            parsed_df = src.parser.parse_all_pdfs()
 
             st.toast("Processing and Storing data...")
-            raw_path = "data/processed/raw_transactions.csv"
-            if os.path.exists(raw_path):
-                raw_df = pd.read_csv(raw_path)
-                src.processor.process_and_store(raw_df)
+            if not parsed_df.empty:
+                src.processor.process_and_store(parsed_df)
+
+                # Optional: still save raw transactions for reference if needed
+                from pathlib import Path
+                raw_path = Path("data/processed/raw_transactions.csv")
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                parsed_df.to_csv(raw_path, index=False)
+
                 st.success("Data pipeline completed successfully!")
                 # Clear the cache so new data is loaded
                 load_data.clear()
                 st.rerun()
             else:
-                st.error("Pipeline failed: raw_transactions.csv not found.")
+                st.warning("Pipeline completed but no new transactions were found.")
         except Exception as e:
             st.error(f"Error running pipeline: {e}")
 
