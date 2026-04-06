@@ -14,6 +14,26 @@ load_dotenv()
 # Date | Description | Amount | Transaction_Type | Source_Card
 COLUMNS = ["Date", "Description", "Amount", "Transaction_Type", "Source_Card"]
 
+def is_valid_transaction(row):
+    """
+    Validates a parsed row.
+    A row is valid ONLY if the date field strictly matches the regex \\d{2}[/-]\\d{2}[/-]\\d{2,4}.
+    If the field contains non-date characters like 'C', 'Rs.', or 'Limit', discard the row.
+    """
+    date_val = str(row.get("Date", "")).strip()
+
+    # Check for invalid characters/words in the date string
+    invalid_keywords = ['c', 'rs.', 'limit']
+    date_lower = date_val.lower()
+    if any(keyword in date_lower for keyword in invalid_keywords):
+        return False
+
+    # Strict regex check for date format
+    if not re.fullmatch(r'\d{2,4}[/-]\d{2}[/-]\d{2,4}', date_val):
+        return False
+
+    return True
+
 class DecryptionError(Exception):
     """Raised when a PDF fails to decrypt due to an incorrect or missing password."""
     pass
@@ -113,7 +133,7 @@ def parse_hdfc_table(rows, source_card):
     We merge Debit/Credit into Amount and Transaction_Type.
     """
     parsed_data = []
-    headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+    headers = [" ".join(str(h).replace('\n', ' ').split()).lower() if h is not None else "" for h in rows[0]]
 
     date_idx = next((i for i, h in enumerate(headers) if 'date' in h), 0)
     desc_idx = next((i for i, h in enumerate(headers) if 'description' in h or 'particulars' in h), 1)
@@ -237,7 +257,7 @@ def parse_icici_savings_table(rows, source_card):
     Parses ICICI Savings tables.
     """
     parsed_data = []
-    headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+    headers = [" ".join(str(h).replace('\n', ' ').split()).lower() if h is not None else "" for h in rows[0]]
 
     date_idx = next((i for i, h in enumerate(headers) if 'date' in h), 0)
     desc_idx = next((i for i, h in enumerate(headers) if 'particulars' in h or 'description' in h), 1)
@@ -284,7 +304,7 @@ def parse_sbi_table(rows, source_card):
     Parses SBI tables.
     """
     parsed_data = []
-    headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+    headers = [" ".join(str(h).replace('\n', ' ').split()).lower() if h is not None else "" for h in rows[0]]
 
     date_idx = next((i for i, h in enumerate(headers) if 'date' in h), 0)
     desc_idx = next((i for i, h in enumerate(headers) if 'transaction details' in h or 'description' in h), 1)
@@ -349,7 +369,7 @@ def parse_generic_table(rows, source_card):
     if not rows or len(rows) < 2:
         return parsed_data
 
-    headers = [str(h).strip().lower() if h is not None else "" for h in rows[0]]
+    headers = [" ".join(str(h).replace('\n', ' ').split()).lower() if h is not None else "" for h in rows[0]]
 
     date_idx = next((i for i, h in enumerate(headers) if 'date' in h), 0)
     desc_idx = next((i for i, h in enumerate(headers) if 'description' in h or 'particulars' in h), 1)
@@ -524,13 +544,16 @@ def process_pdf(pdf_path, passwords):
                         if not tables or len(tables) == 0:
                             page_text = page.extract_text()
                             if page_text:
-                                regex = r'(\d{2}/\d{2}/\d{4})\s+(.*?)\s+([\d,]+\.\d{2}(?:\s*CR)?)'
+                                print(f"[DEBUG] Raw Text Sample Page 1: {page_text[:200]}")
+                                regex = r'(\d{2}/\d{2}/\d{2,4}).*?\s+([\d,]+\.\d{2}(?:\s*CR)?)'
                                 for line in page_text.split('\n'):
                                     match = re.search(regex, line)
                                     if match:
                                         date_str = match.group(1)
-                                        desc = match.group(2).strip()
-                                        amt_str = match.group(3)
+                                        raw_desc = line[match.end(1):match.start(2)].strip()
+                                        # Post-processing: Remove long numeric reference strings (8+ digits)
+                                        desc = re.sub(r'\b\d{8,}\b', '', raw_desc).strip()
+                                        amt_str = match.group(2)
 
                                         amount, is_credit = clean_amount(amt_str)
                                         txn_type = "Credit" if "CR" in amt_str.upper() else "Debit"
@@ -543,15 +566,16 @@ def process_pdf(pdf_path, passwords):
                                         if amount > 0:
                                             # Apply Global Row Validator to regex fallback
                                             desc_lower = desc.lower()
-                                            global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due']
-                                            if not any(junk in desc_lower for junk in global_row_junk_keywords):
-                                                parsed_rows.append({
-                                                    "Date": date_parsed,
-                                                    "Description": desc,
-                                                    "Amount": amount,
-                                                    "Transaction_Type": txn_type,
-                                                    "Source_Card": source_card
-                                                })
+                                            global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due', 'summary']
+                                            row_dict = {
+                                                "Date": date_parsed,
+                                                "Description": desc,
+                                                "Amount": amount,
+                                                "Transaction_Type": txn_type,
+                                                "Source_Card": source_card
+                                            }
+                                            if not any(junk in desc_lower for junk in global_row_junk_keywords) and is_valid_transaction(row_dict):
+                                                parsed_rows.append(row_dict)
                                                 rows_on_page += 1
                                             found_any_table = True
 
@@ -615,12 +639,12 @@ def process_pdf(pdf_path, passwords):
                         else:
                             rows = parse_generic_table(table, source_card)
 
-                        # Global Row Validator: Discard row if Description contains 'LIMIT', 'BALANCE', 'TOTAL', 'OUTSTANDING', or 'DUE'
+                        # Global Row Validator: Discard row if Description contains 'LIMIT', 'BALANCE', 'TOTAL', 'OUTSTANDING', 'DUE', or 'SUMMARY'
                         valid_rows = []
-                        global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due']
+                        global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due', 'summary']
                         for row in rows:
                             desc_lower = str(row.get("Description", "")).lower()
-                            if not any(junk in desc_lower for junk in global_row_junk_keywords):
+                            if not any(junk in desc_lower for junk in global_row_junk_keywords) and is_valid_transaction(row):
                                 valid_rows.append(row)
 
                         parsed_rows.extend(valid_rows)
