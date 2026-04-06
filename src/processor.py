@@ -25,14 +25,14 @@ def ensure_mapping_file():
             "insurance": "Insurance",
             "rent": "Rent"
         }
-        with open(MAPPING_FILE, 'w') as f:
+        with MAPPING_FILE.open('w') as f:
             json.dump(default_mapping, f, indent=4)
         print(f"Created default category mapping at {MAPPING_FILE}")
 
 def load_mapping():
     """Loads the category mapping from the JSON file."""
     ensure_mapping_file()
-    with open(MAPPING_FILE, 'r') as f:
+    with MAPPING_FILE.open('r') as f:
         mapping = json.load(f)
     # Ensure all keys are lowercase for case-insensitive matching
     return {k.lower(): v for k, v in mapping.items()}
