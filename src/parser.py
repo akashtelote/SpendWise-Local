@@ -17,22 +17,25 @@ COLUMNS = ["Date", "Description", "Amount", "Transaction_Type", "Source_Card"]
 def is_valid_transaction(row):
     """
     Validates a parsed row.
-    A row is valid ONLY if the date field strictly matches the regex \\d{2}[/-]\\d{2}[/-]\\d{2,4}.
+    Extracts date if it matches the regex \\d{2}[/-]\\d{2}[/-]\\d{2,4}.
     If the field contains non-date characters like 'C', 'Rs.', or 'Limit', discard the row.
+    Returns (is_valid, extracted_date, reason)
     """
     date_val = str(row.get("Date", "")).strip()
 
     # Check for invalid characters/words in the date string
     invalid_keywords = ['c', 'rs.', 'limit']
     date_lower = date_val.lower()
-    if any(keyword in date_lower for keyword in invalid_keywords):
-        return False
+    for keyword in invalid_keywords:
+        if keyword in date_lower:
+            return (False, None, f"Keyword '{keyword.upper()}' found in date")
 
-    # Strict regex check for date format
-    if not re.fullmatch(r'\d{2,4}[/-]\d{2}[/-]\d{2,4}', date_val):
-        return False
+    # Resilient regex check for date format (search anywhere in string)
+    match = re.search(r'\d{2,4}[/-]\d{2}[/-]\d{2,4}', date_val)
+    if not match:
+        return (False, None, "Date format mismatch")
 
-    return True
+    return (True, match.group(0), "")
 
 class DecryptionError(Exception):
     """Raised when a PDF fails to decrypt due to an incorrect or missing password."""
@@ -119,7 +122,8 @@ def clean_amount(amount_str):
     amt_str = str(amount_str).strip().upper()
     is_credit = "CR" in amt_str or amt_str.endswith(" CR") or " CR" in amt_str
 
-    # Remove commas, currency symbols, and text like CR
+    # Explicitly remove the rupee symbol, then remove other non-numeric characters
+    amt_str = amt_str.replace('₹', '')
     cleaned = re.sub(r'[^\d.]', '', amt_str)
     try:
         return float(cleaned), is_credit
@@ -563,21 +567,31 @@ def process_pdf(pdf_path, passwords):
                                         except Exception:
                                             date_parsed = date_str
 
-                                        if amount > 0:
-                                            # Apply Global Row Validator to regex fallback
-                                            desc_lower = desc.lower()
-                                            global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due', 'summary']
-                                            row_dict = {
-                                                "Date": date_parsed,
-                                                "Description": desc,
-                                                "Amount": amount,
-                                                "Transaction_Type": txn_type,
-                                                "Source_Card": source_card
-                                            }
-                                            if not any(junk in desc_lower for junk in global_row_junk_keywords) and is_valid_transaction(row_dict):
-                                                parsed_rows.append(row_dict)
-                                                rows_on_page += 1
-                                            found_any_table = True
+                                        # Apply Global Row Validator to regex fallback
+                                        desc_lower = desc.lower()
+                                        global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due', 'summary']
+
+                                        row_dict = {
+                                            "Date": date_parsed,
+                                            "Description": desc,
+                                            "Amount": amount,
+                                            "Transaction_Type": txn_type,
+                                            "Source_Card": source_card
+                                        }
+
+                                        is_valid, extracted_date, reason = is_valid_transaction(row_dict)
+
+                                        if amount <= 0:
+                                            print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: Malformed Amount Data")
+                                        elif any(junk in desc_lower for junk in global_row_junk_keywords):
+                                            print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: Global keyword filter match")
+                                        elif not is_valid:
+                                            print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: {reason}")
+                                        else:
+                                            row_dict["Date"] = extracted_date
+                                            parsed_rows.append(row_dict)
+                                            rows_on_page += 1
+                                        found_any_table = True
 
                     elif bank_name == "SBI":
                         tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
@@ -644,7 +658,18 @@ def process_pdf(pdf_path, passwords):
                         global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due', 'summary']
                         for row in rows:
                             desc_lower = str(row.get("Description", "")).lower()
-                            if not any(junk in desc_lower for junk in global_row_junk_keywords) and is_valid_transaction(row):
+                            is_valid, extracted_date, reason = is_valid_transaction(row)
+
+                            amount = row.get("Amount", 0.0)
+
+                            if amount <= 0:
+                                print(f"[DEBUG] Page {i+1}: Rejected Row {row} | Reason: Malformed Amount Data")
+                            elif any(junk in desc_lower for junk in global_row_junk_keywords):
+                                print(f"[DEBUG] Page {i+1}: Rejected Row {row} | Reason: Global keyword filter match")
+                            elif not is_valid:
+                                print(f"[DEBUG] Page {i+1}: Rejected Row {row} | Reason: {reason}")
+                            else:
+                                row["Date"] = extracted_date
                                 valid_rows.append(row)
 
                         parsed_rows.extend(valid_rows)

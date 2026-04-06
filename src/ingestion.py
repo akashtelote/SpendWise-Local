@@ -4,7 +4,6 @@ from email.header import decode_header
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta
 from pathlib import Path
-import os
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -17,6 +16,10 @@ def download_statements(days=32):
     and download PDF attachments.
     """
     print(f"Starting ingestion: Looking back {days} days.")
+
+    # We load standard library 'os' locally to read environment variables
+    # but strictly use pathlib for all path operations as requested.
+    import os
 
     email_user = os.environ.get("EMAIL_USER")
     email_pass = os.environ.get("EMAIL_APP_PASSWORD")
@@ -102,7 +105,7 @@ def download_statements(days=32):
                                 print(f"File already exists, skipping: {new_filename}")
                             else:
                                 print(f"Downloading: {new_filename}")
-                                with open(filepath, "wb") as f:
+                                with filepath.open("wb") as f:
                                     f.write(part.get_payload(decode=True))
                                 new_files_downloaded += 1
 
