@@ -123,7 +123,7 @@ def clean_amount(amount_str):
     is_credit = "CR" in amt_str or amt_str.endswith(" CR") or " CR" in amt_str
 
     # Explicitly remove the rupee symbol, then remove other non-numeric characters
-    amt_str = amt_str.replace('₹', '')
+    amt_str = amt_str.replace('₹', '').replace('CR', '').replace(',', '')
     cleaned = re.sub(r'[^\d.]', '', amt_str)
     try:
         return float(cleaned), is_credit
@@ -202,7 +202,7 @@ def parse_icici_cc_table(rows, source_card):
     # Refined Column Mapping: prioritize 'amount (int)' or 'amount(rs.)' over just 'amount'
     amt_idx = -1
     for i, h in enumerate(headers):
-        if 'amount (int)' in h or 'amount(rs.)' in h:
+        if h == 'amount (int)' or h == 'amount(rs.)':
             amt_idx = i
             break
     if amt_idx == -1:
@@ -315,7 +315,7 @@ def parse_sbi_table(rows, source_card):
 
     amt_idx = -1
     for i, h in enumerate(headers):
-        if 'amount (int)' in h or 'amount(rs.)' in h:
+        if h == 'amount (int)' or h == 'amount(rs.)':
             amt_idx = i
             break
     if amt_idx == -1:
@@ -385,7 +385,7 @@ def parse_generic_table(rows, source_card):
     # Or just a single amount column
     amt_idx = -1
     for i, h in enumerate(headers):
-        if 'amount (int)' in h or 'amount(rs.)' in h:
+        if h == 'amount (int)' or h == 'amount(rs.)':
             amt_idx = i
             break
     if amt_idx == -1:
@@ -544,54 +544,6 @@ def process_pdf(pdf_path, passwords):
                             # Fallback if not found
                             tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text", "snap_tolerance": 5})
 
-                        # ICICI CC Regex Fallback
-                        if not tables or len(tables) == 0:
-                            page_text = page.extract_text()
-                            if page_text:
-                                print(f"[DEBUG] Raw Text Sample (First 500 chars) of Page 1: {page_text[:500]}")
-                                regex = r'(\d{2}/\d{2}/\d{2,4})(.*?)\s+([\d,]+\.\d{2}(?:\s*CR)?)'
-                                for match in re.finditer(regex, page_text, re.DOTALL):
-                                    date_str = match.group(1)
-                                    raw_desc = match.group(2).strip()
-                                    # Post-processing: Remove newlines and long numeric reference strings (8+ digits)
-                                    raw_desc = raw_desc.replace('\n', ' ')
-                                    desc = re.sub(r'\b\d{8,}\b', '', raw_desc).strip()
-                                    amt_str = match.group(3)
-
-                                    amount, is_credit = clean_amount(amt_str)
-                                    txn_type = "Credit" if "CR" in amt_str.upper() else "Debit"
-
-                                    try:
-                                        date_parsed = pd.to_datetime(date_str, dayfirst=True).strftime('%Y-%m-%d')
-                                    except Exception:
-                                        date_parsed = date_str
-
-                                    # Apply Global Row Validator to regex fallback
-                                    desc_lower = desc.lower()
-                                    global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due', 'summary']
-
-                                    row_dict = {
-                                        "Date": date_parsed,
-                                        "Description": desc,
-                                        "Amount": amount,
-                                        "Transaction_Type": txn_type,
-                                        "Source_Card": source_card
-                                    }
-
-                                    is_valid, extracted_date, reason = is_valid_transaction(row_dict)
-
-                                    if amount <= 0:
-                                        print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: Malformed Amount Data")
-                                    elif any(junk in desc_lower for junk in global_row_junk_keywords):
-                                        print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: Global keyword filter match")
-                                    elif not is_valid:
-                                        print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: {reason}")
-                                    else:
-                                        row_dict["Date"] = extracted_date
-                                        parsed_rows.append(row_dict)
-                                        rows_on_page += 1
-                                    found_any_table = True
-
                     elif bank_name == "SBI":
                         tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
                     else:
@@ -612,6 +564,55 @@ def process_pdf(pdf_path, passwords):
 
                     if tables:
                         found_any_table = True
+
+                    # Universal Regex Fallback
+                    if not tables or len(tables) == 0:
+                        page_text = page.extract_text()
+                        if page_text:
+                            if i == 0:
+                                print(f"[DEBUG] Raw Text Sample (First 500 chars) of Page 1: {page_text[:500]}")
+                            regex = r'(\d{2}/\d{2}/\d{2,4})\s+(.*?)\s+([\d,]+\.\d{2}(?:\s*CR)?)'
+                            for match in re.finditer(regex, page_text, re.DOTALL):
+                                date_str = match.group(1)
+                                raw_desc = match.group(2).strip()
+                                # Post-processing: Remove newlines and long numeric reference strings (8+ digits)
+                                raw_desc = raw_desc.replace('\n', ' ')
+                                desc = re.sub(r'\d{8,}', '', raw_desc).strip()
+                                amt_str = match.group(3)
+
+                                amount, is_credit = clean_amount(amt_str)
+                                txn_type = "Credit" if "CR" in amt_str.upper() else "Debit"
+
+                                try:
+                                    date_parsed = pd.to_datetime(date_str, dayfirst=True).strftime('%Y-%m-%d')
+                                except Exception:
+                                    date_parsed = date_str
+
+                                # Apply Global Row Validator to regex fallback
+                                desc_lower = desc.lower()
+                                global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due', 'summary']
+
+                                row_dict = {
+                                    "Date": date_parsed,
+                                    "Description": desc,
+                                    "Amount": amount,
+                                    "Transaction_Type": txn_type,
+                                    "Source_Card": source_card
+                                }
+
+                                is_valid, extracted_date, reason = is_valid_transaction(row_dict)
+
+                                if not is_valid:
+                                    if i == 0: print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: {reason}")
+                                elif amount <= 0:
+                                    if i == 0: print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: Malformed Amount Data")
+                                elif any(junk in desc_lower for junk in global_row_junk_keywords):
+                                    if i == 0: print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: Global keyword filter match")
+                                else:
+                                    row_dict["Date"] = extracted_date
+                                    parsed_rows.append(row_dict)
+                                    rows_on_page += 1
+                                found_any_table = True
 
                     junk_keywords = [
                         "illustration", "late payment charges", "method of payment",
@@ -661,12 +662,12 @@ def process_pdf(pdf_path, passwords):
 
                             amount = row.get("Amount", 0.0)
 
-                            if amount <= 0:
-                                print(f"[DEBUG] Page {i+1}: Rejected Row {row} | Reason: Malformed Amount Data")
+                            if not is_valid:
+                                if i == 0: print(f"[DEBUG] Page {i+1}: Rejected Row {row} | Reason: {reason}")
+                            elif amount <= 0:
+                                if i == 0: print(f"[DEBUG] Page {i+1}: Rejected Row {row} | Reason: Malformed Amount Data")
                             elif any(junk in desc_lower for junk in global_row_junk_keywords):
-                                print(f"[DEBUG] Page {i+1}: Rejected Row {row} | Reason: Global keyword filter match")
-                            elif not is_valid:
-                                print(f"[DEBUG] Page {i+1}: Rejected Row {row} | Reason: {reason}")
+                                if i == 0: print(f"[DEBUG] Page {i+1}: Rejected Row {row} | Reason: Global keyword filter match")
                             else:
                                 row["Date"] = extracted_date
                                 valid_rows.append(row)
