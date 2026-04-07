@@ -548,50 +548,49 @@ def process_pdf(pdf_path, passwords):
                         if not tables or len(tables) == 0:
                             page_text = page.extract_text()
                             if page_text:
-                                print(f"[DEBUG] Raw Text Sample Page 1: {page_text[:200]}")
-                                regex = r'(\d{2}/\d{2}/\d{2,4}).*?\s+([\d,]+\.\d{2}(?:\s*CR)?)'
-                                for line in page_text.split('\n'):
-                                    match = re.search(regex, line)
-                                    if match:
-                                        date_str = match.group(1)
-                                        raw_desc = line[match.end(1):match.start(2)].strip()
-                                        # Post-processing: Remove long numeric reference strings (8+ digits)
-                                        desc = re.sub(r'\b\d{8,}\b', '', raw_desc).strip()
-                                        amt_str = match.group(2)
+                                print(f"[DEBUG] Raw Text Sample (First 500 chars) of Page 1: {page_text[:500]}")
+                                regex = r'(\d{2}/\d{2}/\d{2,4})(.*?)\s+([\d,]+\.\d{2}(?:\s*CR)?)'
+                                for match in re.finditer(regex, page_text, re.DOTALL):
+                                    date_str = match.group(1)
+                                    raw_desc = match.group(2).strip()
+                                    # Post-processing: Remove newlines and long numeric reference strings (8+ digits)
+                                    raw_desc = raw_desc.replace('\n', ' ')
+                                    desc = re.sub(r'\b\d{8,}\b', '', raw_desc).strip()
+                                    amt_str = match.group(3)
 
-                                        amount, is_credit = clean_amount(amt_str)
-                                        txn_type = "Credit" if "CR" in amt_str.upper() else "Debit"
+                                    amount, is_credit = clean_amount(amt_str)
+                                    txn_type = "Credit" if "CR" in amt_str.upper() else "Debit"
 
-                                        try:
-                                            date_parsed = pd.to_datetime(date_str, dayfirst=True).strftime('%Y-%m-%d')
-                                        except Exception:
-                                            date_parsed = date_str
+                                    try:
+                                        date_parsed = pd.to_datetime(date_str, dayfirst=True).strftime('%Y-%m-%d')
+                                    except Exception:
+                                        date_parsed = date_str
 
-                                        # Apply Global Row Validator to regex fallback
-                                        desc_lower = desc.lower()
-                                        global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due', 'summary']
+                                    # Apply Global Row Validator to regex fallback
+                                    desc_lower = desc.lower()
+                                    global_row_junk_keywords = ['limit', 'balance', 'total', 'outstanding', 'due', 'summary']
 
-                                        row_dict = {
-                                            "Date": date_parsed,
-                                            "Description": desc,
-                                            "Amount": amount,
-                                            "Transaction_Type": txn_type,
-                                            "Source_Card": source_card
-                                        }
+                                    row_dict = {
+                                        "Date": date_parsed,
+                                        "Description": desc,
+                                        "Amount": amount,
+                                        "Transaction_Type": txn_type,
+                                        "Source_Card": source_card
+                                    }
 
-                                        is_valid, extracted_date, reason = is_valid_transaction(row_dict)
+                                    is_valid, extracted_date, reason = is_valid_transaction(row_dict)
 
-                                        if amount <= 0:
-                                            print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: Malformed Amount Data")
-                                        elif any(junk in desc_lower for junk in global_row_junk_keywords):
-                                            print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: Global keyword filter match")
-                                        elif not is_valid:
-                                            print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: {reason}")
-                                        else:
-                                            row_dict["Date"] = extracted_date
-                                            parsed_rows.append(row_dict)
-                                            rows_on_page += 1
-                                        found_any_table = True
+                                    if amount <= 0:
+                                        print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: Malformed Amount Data")
+                                    elif any(junk in desc_lower for junk in global_row_junk_keywords):
+                                        print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: Global keyword filter match")
+                                    elif not is_valid:
+                                        print(f"[DEBUG] Page {i+1}: Rejected Row {row_dict} | Reason: {reason}")
+                                    else:
+                                        row_dict["Date"] = extracted_date
+                                        parsed_rows.append(row_dict)
+                                        rows_on_page += 1
+                                    found_any_table = True
 
                     elif bank_name == "SBI":
                         tables = page.extract_tables(table_settings={"vertical_strategy": "text", "horizontal_strategy": "text"})
