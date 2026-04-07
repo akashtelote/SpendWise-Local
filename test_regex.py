@@ -9,6 +9,7 @@ test_rows = [
     {"Date": "C15/05/23", "Desc": "Invalid C prefix"},
     {"Date": "Rs. 100", "Desc": "Invalid Rs"},
     {"Date": "Limit: 100", "Desc": "Invalid Limit"},
+    {"Date": "15-05-2023\nREF1234", "Desc": "Valid with extra text"},
 ]
 
 for row in test_rows:
