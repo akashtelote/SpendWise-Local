@@ -61,7 +61,7 @@ def generate_hash(row):
 
 def process_and_store(df: pd.DataFrame):
     """Processes the DataFrame and stores it in the SQLite database."""
-    print(f"[DATABASE] Received {len(df)} transactions for processing.")
+    print(f"[DATABASE] Commencing batch storage for {len(df)} transactions.")
 
     if df.empty:
         print("[WARNING] No data to process. Database update skipped.")
