@@ -10,6 +10,7 @@ dependencies = [
     "pandas>=3.0.2",
     "pdfplumber>=0.11.9",
     "plotly>=6.6.0",
+    "pytest>=9.0.3",
     "python-dotenv>=1.2.2",
     "streamlit>=1.56.0",
 ]
