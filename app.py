@@ -53,7 +53,7 @@ def run_pipeline():
 
                 st.success("Data pipeline completed successfully!")
                 # Clear the cache so new data is loaded
-                load_data.clear()
+                st.cache_data.clear()
                 st.rerun()
             else:
                 st.warning("Pipeline completed but no new transactions were found.")
@@ -78,9 +78,7 @@ def main():
     # Date Range Filter
     st.sidebar.subheader("Filters")
     min_date = df['date'].min().date()
-    max_date = df['date'].min().date()
-    if not df.empty:
-        max_date = df['date'].max().date()
+    max_date = df['date'].max().date()
 
     date_range = st.sidebar.date_input(
         "Select Date Range",
@@ -98,7 +96,7 @@ def main():
         filtered_df = df
 
     if filtered_df.empty:
-        st.warning("No data found for the selected date range.")
+        st.info("No transactions found for the selected date range. Try expanding the filters.")
         return
 
     # --- Metrics Logic ---
