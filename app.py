@@ -16,7 +16,7 @@ def load_data():
         return pd.DataFrame()
 
     conn = sqlite3.connect(DB_PATH)
-    query = "SELECT * FROM transactions WHERE transaction_type IN ('debit', 'credit')"
+    query = "SELECT date, description, amount, category, source_card, transaction_type FROM transactions WHERE transaction_type IN ('debit', 'credit')"
     df = pd.read_sql_query(query, conn)
     conn.close()
 
@@ -52,7 +52,6 @@ def run_pipeline():
                 parsed_df.to_csv(raw_path, index=False)
 
                 st.success("Data pipeline completed successfully!")
-                # Clear the cache so new data is loaded
                 st.cache_data.clear()
                 st.rerun()
             else:
@@ -96,14 +95,14 @@ def main():
         filtered_df = df
 
     if filtered_df.empty:
-        st.info("No transactions found for the selected date range. Try expanding the filters.")
+        st.info('No transactions found for the selected range. Total rows in database: ' + str(len(df)))
         return
 
     # --- Metrics Logic ---
     debit_df = filtered_df[filtered_df['transaction_type'] == 'debit']
 
     # 1. Total Spend
-    total_spend = debit_df['amount'].sum()
+    total_spend = float(debit_df['amount'].sum())
 
     # 2. Top Category
     if not debit_df.empty:
