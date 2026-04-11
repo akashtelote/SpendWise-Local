@@ -9,10 +9,10 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-def download_statements(days=32):
+def download_statements(days=60):
     """
     Connect to Gmail via IMAP, search for emails with "Statement" in the subject
-    from the last `days` days (defaults to 32 days, approx. one billing cycle),
+    from the last `days` days (defaults to 60 days, approx. two billing cycles),
     and download PDF attachments.
     """
     print(f"Starting ingestion: Looking back {days} days.")

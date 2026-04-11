@@ -76,14 +76,21 @@ def main():
 
     # Date Range Filter
     st.sidebar.subheader("Filters")
-    min_date = df['date'].min().date()
-    max_date = df['date'].max().date()
+    from datetime import date, timedelta
+    today = date.today()
+    df_min_date = df['date'].min().date()
+    df_max_date = df['date'].max().date()
+
+    # Calculate resilient bounds
+    slider_min_value = min(df_min_date, today - timedelta(days=60))
+    slider_max_value = max(df_max_date, today)
+    default_start = max(df_min_date, today - timedelta(days=60))
 
     date_range = st.sidebar.date_input(
         "Select Date Range",
-        value=(min_date, max_date),
-        min_value=min_date,
-        max_value=max_date
+        value=(default_start, today),
+        min_value=slider_min_value,
+        max_value=slider_max_value
     )
 
     if len(date_range) == 2:
@@ -116,32 +123,28 @@ def main():
     # 3. Transaction Count
     transaction_count = len(filtered_df)
 
-    # 4. MoM Change
-    # To calculate MoM accurately, we look at the entire dataset (df, not filtered_df)
-    # We find the latest month in df, sum its debits, then find the previous month and sum its debits.
+    # 4. Rolling Spend Velocity (30d)
+    # Window A (Current): Sum of debits from today back to today - 30.
+    # Window B (Baseline): Sum of debits from today - 31 back to today - 60.
     all_debits = df[df['transaction_type'] == 'debit'].copy()
     if not all_debits.empty:
-        all_debits['YearMonth'] = all_debits['date'].dt.to_period('M')
-        monthly_spend = all_debits.groupby('YearMonth')['amount'].sum()
+        today_datetime = pd.to_datetime(today)
+        window_a_start = today_datetime - pd.Timedelta(days=30)
+        window_b_start = today_datetime - pd.Timedelta(days=60)
+        window_b_end = today_datetime - pd.Timedelta(days=31)
 
-        # Sort months
-        monthly_spend = monthly_spend.sort_index()
+        mask_a = (all_debits['date'] >= window_a_start) & (all_debits['date'] <= today_datetime)
+        mask_b = (all_debits['date'] >= window_b_start) & (all_debits['date'] <= window_b_end)
 
-        if len(monthly_spend) >= 2:
-            current_month = monthly_spend.index[-1]
-            previous_month = monthly_spend.index[-2]
+        current_spend = float(all_debits.loc[mask_a, 'amount'].sum())
+        previous_spend = float(all_debits.loc[mask_b, 'amount'].sum())
 
-            current_spend = monthly_spend.loc[current_month]
-            previous_spend = monthly_spend.loc[previous_month]
-
-            if previous_spend > 0:
-                mom_change = ((current_spend - previous_spend) / previous_spend) * 100
-            else:
-                mom_change = 0.0
+        if previous_spend > 0:
+            velocity_change = ((current_spend - previous_spend) / previous_spend) * 100
         else:
-            mom_change = 0.0
+            velocity_change = 0.0
     else:
-        mom_change = 0.0
+        velocity_change = 0.0
 
     # --- Top-Level Metrics Layout ---
     col1, col2, col3, col4 = st.columns(4)
@@ -153,7 +156,7 @@ def main():
     with col3:
         st.metric(label="Transaction Count", value=f"{transaction_count:,}")
     with col4:
-        st.metric(label="MoM Change (Total Spend)", value=f"{mom_change:.1f}%", delta=f"{mom_change:.1f}% vs last month", delta_color="inverse")
+        st.metric(label="Rolling Spend Velocity (30d)", value=f"{velocity_change:.1f}%", delta=f"{velocity_change:.1f}% vs previous 30d", delta_color="inverse")
 
     st.markdown("---")
 
@@ -195,50 +198,62 @@ def main():
 
     st.markdown("---")
 
-    # Trend Line: Cumulative Spend (Current vs Previous Month)
-    st.subheader("Spending Pace (Current vs Previous Month)")
-    if len(all_debits) > 0 and 'YearMonth' in all_debits.columns:
-        unique_months = sorted(all_debits['YearMonth'].unique())
+    # Weekly Spend Pattern Bar Chart
+    st.subheader("Weekly Spend Pattern")
+    if not debit_df.empty:
+        # Group by week (starting on Monday by default in pandas)
+        # Using the currently filtered dataframe to show patterns within the selected range
+        weekly_df = debit_df.copy()
 
-        if len(unique_months) >= 2:
-            cur_month = unique_months[-1]
-            prev_month = unique_months[-2]
+        # Determine the start of the week for each date
+        weekly_df['Week'] = weekly_df['date'].dt.to_period('W').dt.start_time
 
-            # Extract data for these two months
-            cur_month_data = all_debits[all_debits['YearMonth'] == cur_month].copy()
-            prev_month_data = all_debits[all_debits['YearMonth'] == prev_month].copy()
+        weekly_spend = weekly_df.groupby('Week')['amount'].sum().reset_index()
+        weekly_spend = weekly_spend.sort_values('Week')
 
-            # Sort by date
-            cur_month_data = cur_month_data.sort_values('date')
-            prev_month_data = prev_month_data.sort_values('date')
+        # Calculate daily sum for 7-day rolling average
+        daily_spend = debit_df.groupby('date')['amount'].sum().reset_index()
+        daily_spend = daily_spend.sort_values('date')
 
-            # Add 'DayOfMonth'
-            cur_month_data['DayOfMonth'] = cur_month_data['date'].dt.day
-            prev_month_data['DayOfMonth'] = prev_month_data['date'].dt.day
+        # Reindex to ensure missing days have 0 spend before rolling average
+        all_days = pd.date_range(start=daily_spend['date'].min(), end=daily_spend['date'].max())
+        daily_spend = daily_spend.set_index('date').reindex(all_days, fill_value=0).reset_index()
+        daily_spend = daily_spend.rename(columns={'index': 'date'})
 
-            # Group by day and calculate cumulative sum
-            cur_daily = cur_month_data.groupby('DayOfMonth')['amount'].sum().reset_index()
-            cur_daily['Cumulative Spend'] = cur_daily['amount'].cumsum()
-            cur_daily['Month'] = 'Current Month'
+        daily_spend['7-Day Rolling Avg'] = daily_spend['amount'].rolling(window=7, min_periods=1).mean()
 
-            prev_daily = prev_month_data.groupby('DayOfMonth')['amount'].sum().reset_index()
-            prev_daily['Cumulative Spend'] = prev_daily['amount'].cumsum()
-            prev_daily['Month'] = 'Previous Month'
+        # Create a figure with secondary y-axis style using plotly graph objects to overlay line and bar
+        fig_trend = go.Figure()
 
-            # Combine
-            trend_df = pd.concat([cur_daily, prev_daily])
+        # Add Weekly Spend Bars
+        fig_trend.add_trace(go.Bar(
+            x=weekly_spend['Week'],
+            y=weekly_spend['amount'],
+            name='Weekly Spend',
+            marker_color='red',
+            opacity=0.7
+        ))
 
-            fig_trend = px.line(
-                trend_df,
-                x='DayOfMonth',
-                y='Cumulative Spend',
-                color='Month',
-                markers=True,
-                title="Cumulative Spend Pace"
-            )
-            st.plotly_chart(fig_trend, use_container_width=True)
-        else:
-            st.info("Need at least two months of data to show spending pace comparison.")
+        # Add 7-Day Rolling Average Line
+        fig_trend.add_trace(go.Scatter(
+            x=daily_spend['date'],
+            y=daily_spend['7-Day Rolling Avg'],
+            name='7-Day Rolling Avg',
+            mode='lines',
+            line=dict(color='blue', width=2)
+        ))
+
+        fig_trend.update_layout(
+            title="Weekly Spend Pattern with 7-Day Trend",
+            xaxis_title="Date",
+            yaxis_title="Amount",
+            barmode='group',
+            hovermode='x unified'
+        )
+
+        st.plotly_chart(fig_trend, use_container_width=True)
+    else:
+        st.info("No expense data available in the selected range to show weekly patterns.")
 
     st.markdown("---")
 

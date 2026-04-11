@@ -692,7 +692,7 @@ def process_pdf(pdf_path, passwords):
 def parse_all_pdfs(raw_dir="data/raw"):
     """
     Iterates through all PDFs in raw_dir, parses them, and returns a unified DataFrame.
-    Filters out files not matching YYYY-MM-DD prefix or older than 32 days.
+    Filters out files not matching YYYY-MM-DD prefix or older than 60 days.
     """
     import time
     from datetime import datetime, timedelta
@@ -706,7 +706,7 @@ def parse_all_pdfs(raw_dir="data/raw"):
     passwords = get_pdf_passwords()
     all_data = []
 
-    cutoff_date = datetime.now() - timedelta(days=32)
+    cutoff_date = datetime.now() - timedelta(days=60)
 
     for file_path in raw_dir_path.iterdir():
         if not file_path.name.lower().endswith('.pdf'):
@@ -727,7 +727,7 @@ def parse_all_pdfs(raw_dir="data/raw"):
             continue
 
         if file_date < cutoff_date:
-            print(f"[SKIP] File outside 32-day window: {filename}")
+            print(f"[SKIP] File outside 60-day window: {filename}")
             continue
 
         rows = process_pdf(file_path, passwords)
