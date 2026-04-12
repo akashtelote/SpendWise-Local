@@ -46,7 +46,6 @@ def run_pipeline():
                 src.processor.process_and_store(parsed_df)
 
                 # Optional: still save raw transactions for reference if needed
-                from pathlib import Path
                 raw_path = Path("data/processed/raw_transactions.csv")
                 raw_path.parent.mkdir(parents=True, exist_ok=True)
                 parsed_df.to_csv(raw_path, index=False)
