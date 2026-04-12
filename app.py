@@ -74,8 +74,6 @@ def main():
         st.warning("No data found. Please ensure the pipeline has run and generated data.")
         return
 
-    st.sidebar.markdown(f"**Database Status:** {len(df)} total records")
-
     # Date Range Filter
     st.sidebar.subheader("Filters")
     from datetime import date, timedelta
@@ -108,6 +106,23 @@ def main():
     if filtered_df.empty:
         st.info('No transactions found for the selected range. Total rows in database: ' + str(len(df)))
         return
+
+    st.sidebar.success(f"Pipeline Sync: {len(filtered_df)} Records in View")
+
+    debit_df = filtered_df[filtered_df['transaction_type'] == 'debit']
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Top 5 Merchants")
+    if not debit_df.empty:
+        top_merchants = debit_df.groupby('description')['amount'].sum().reset_index()
+        top_merchants = top_merchants.sort_values(by='amount', ascending=False).head(5)
+        # Format the amount column for nicer display. Ensure numeric before formatting.
+        top_merchants['amount'] = top_merchants['amount'].apply(lambda x: f"₹{float(x):,.2f}")
+        top_merchants.columns = ['Merchant', 'Total Spend']
+        # Hide index by using pandas style and removing the index from display
+        st.sidebar.dataframe(top_merchants, hide_index=True, use_container_width=True)
+    else:
+        st.sidebar.info("No expense data in view.")
 
     # --- Metrics Logic ---
     debit_df = filtered_df[filtered_df['transaction_type'] == 'debit']
@@ -164,133 +179,157 @@ def main():
 
     st.markdown("---")
 
-    # --- Visualizations ---
-    st.subheader("Visualizations")
+    # --- Create Tabs ---
+    tab_dashboard, tab_optimization = st.tabs(["Dashboard", "Optimization & Insights"])
 
-    viz_col1, viz_col2 = st.columns(2)
+    with tab_dashboard:
+        # --- Visualizations ---
+        st.subheader("Visualizations")
 
-    with viz_col1:
-        # Donut Chart: Spend by Category
+        viz_col1, viz_col2 = st.columns(2)
+
+        with viz_col1:
+            # Donut Chart: Spend by Category
+            if not debit_df.empty:
+                cat_df = debit_df.groupby('category')['amount'].sum().reset_index()
+                fig_donut = px.pie(cat_df, values='amount', names='category', hole=0.4, title="Spend by Category")
+                fig_donut.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig_donut, use_container_width=True)
+            else:
+                st.info("No expense data available for the Donut Chart.")
+
+        with viz_col2:
+            # Bar Chart: Monthly Cashflow (Income vs Expenses)
+            cashflow_df = filtered_df.copy()
+            if not cashflow_df.empty:
+                cashflow_df['yearmonth'] = cashflow_df['date'].dt.strftime('%Y-%m')
+                # Group by Month and Transaction_Type
+                monthly_cf = cashflow_df.groupby(['yearmonth', 'transaction_type'])['amount'].sum().reset_index()
+
+                fig_bar = px.bar(
+                    monthly_cf,
+                    x='yearmonth',
+                    y='amount',
+                    color='transaction_type',
+                    barmode='group',
+                    title="Monthly Cashflow (Income vs Expenses)",
+                    color_discrete_map={'debit': 'red', 'credit': 'green'}
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.info("No data available for Monthly Cashflow Bar Chart.")
+
+        st.markdown("---")
+
+        # Weekly Spend Pattern Bar Chart
+        st.subheader("Weekly Spend Pattern")
         if not debit_df.empty:
-            cat_df = debit_df.groupby('category')['amount'].sum().reset_index()
-            fig_donut = px.pie(cat_df, values='amount', names='category', hole=0.4, title="Spend by Category")
-            fig_donut.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig_donut, use_container_width=True)
-        else:
-            st.info("No expense data available for the Donut Chart.")
+            # Group by week (starting on Monday by default in pandas)
+            # Using the currently filtered dataframe to show patterns within the selected range
+            weekly_df = debit_df.copy()
 
-    with viz_col2:
-        # Bar Chart: Monthly Cashflow (Income vs Expenses)
-        cashflow_df = filtered_df.copy()
-        if not cashflow_df.empty:
-            cashflow_df['yearmonth'] = cashflow_df['date'].dt.strftime('%Y-%m')
-            # Group by Month and Transaction_Type
-            monthly_cf = cashflow_df.groupby(['yearmonth', 'transaction_type'])['amount'].sum().reset_index()
+            # Determine the start of the week for each date
+            weekly_df['week'] = weekly_df['date'].dt.to_period('W').dt.start_time
 
-            fig_bar = px.bar(
-                monthly_cf,
-                x='yearmonth',
+            weekly_spend = weekly_df.groupby('week')['amount'].sum().reset_index()
+            weekly_spend = weekly_spend.sort_values('week')
+
+            # Create a simple Bar chart for weekly spend
+            fig_trend = px.bar(
+                weekly_spend,
+                x='week',
                 y='amount',
-                color='transaction_type',
-                barmode='group',
-                title="Monthly Cashflow (Income vs Expenses)",
-                color_discrete_map={'debit': 'red', 'credit': 'green'}
+                title="Weekly Spend Pattern",
+                labels={'week': 'Week', 'amount': 'Amount'}
             )
-            st.plotly_chart(fig_bar, use_container_width=True)
+            fig_trend.update_traces(marker_color='red', opacity=0.7)
+            st.plotly_chart(fig_trend, use_container_width=True)
         else:
-            st.info("No data available for Monthly Cashflow Bar Chart.")
+            st.info("No expense data available in the selected range to show weekly patterns.")
 
-    st.markdown("---")
+        st.markdown("---")
 
-    # Weekly Spend Pattern Bar Chart
-    st.subheader("Weekly Spend Pattern")
-    if not debit_df.empty:
-        # Group by week (starting on Monday by default in pandas)
-        # Using the currently filtered dataframe to show patterns within the selected range
-        weekly_df = debit_df.copy()
+        # --- Recent Transactions ---
+        st.subheader("Recent Transactions")
 
-        # Determine the start of the week for each date
-        weekly_df['week'] = weekly_df['date'].dt.to_period('W').dt.start_time
+        # Sort the table by date descending
+        recent_transactions = filtered_df.sort_values('date', ascending=False).copy()
 
-        weekly_spend = weekly_df.groupby('week')['amount'].sum().reset_index()
-        weekly_spend = weekly_spend.sort_values('week')
+        # Format amount for display in the dataframe without modifying the numeric data type if possible,
+        # but Streamlit's style can be applied, or we can just round/format the column.
+        if 'amount' in recent_transactions.columns:
+            # Instead of replacing the column with a string which might break sorting/filtering,
+            # Streamlit 1.23+ st.dataframe allows pandas Styler for formatting
+            styled_df = recent_transactions.style.format({
+                "amount": lambda x: f"₹{x:,.2f}"
+            })
+            st.dataframe(styled_df, use_container_width=True)
+        else:
+            st.dataframe(recent_transactions, use_container_width=True)
 
-        # Create a simple Bar chart for weekly spend
-        fig_trend = px.bar(
-            weekly_spend,
-            x='week',
-            y='amount',
-            title="Weekly Spend Pattern",
-            labels={'week': 'Week', 'amount': 'Amount'}
-        )
-        fig_trend.update_traces(marker_color='red', opacity=0.7)
-        st.plotly_chart(fig_trend, use_container_width=True)
-    else:
-        st.info("No expense data available in the selected range to show weekly patterns.")
+    with tab_optimization:
+        st.subheader("Reward Optimization")
 
-    st.markdown("---")
+        if not debit_df.empty:
+            # Group by category and source card
+            card_affinity = debit_df.groupby(['category', 'source_card'])['amount'].sum().reset_index()
 
-    # --- Smart Optimization Tips ---
-    st.subheader("Smart Optimization Tips")
+            fig_affinity = px.bar(
+                card_affinity,
+                x='category',
+                y='amount',
+                color='source_card',
+                barmode='group',
+                title="Card vs. Category Reward Affinity",
+                labels={'category': 'Category', 'amount': 'Amount (₹)', 'source_card': 'Source Card'}
+            )
+            st.plotly_chart(fig_affinity, use_container_width=True)
+        else:
+            st.info("No expense data available for Reward Optimization.")
 
-    tips = []
+        st.markdown("---")
 
-    if not debit_df.empty:
-        # Category breakdown
-        cat_breakdown = debit_df.groupby('category')['amount'].sum()
-        total_filtered_spend = cat_breakdown.sum()
+        # --- Smart Optimization Tips ---
+        st.subheader("Smart Optimization Tips")
 
-        # 1. Food & Dining Tip
-        if 'Food & Dining' in cat_breakdown:
-            food_spend = cat_breakdown['Food & Dining']
-            food_pct = (food_spend / total_filtered_spend) * 100
-            if food_pct > 20:
-                # Check cards used for Food & Dining
-                food_cards = debit_df[debit_df['category'] == 'Food & Dining']['source_card'].unique()
-                if not any('hdfc millenia' in str(card).lower() for card in food_cards):
-                    tips.append("🍔 **High Dining Spend Detected:** Your Food & Dining spend is over 20% of your total expenses. Tip: Move your Dining/Swiggy/Zomato spends to HDFC Millenia for 5% cashback.")
+        tips = []
 
-        # 2. Shopping Tip
-        if 'Shopping' in cat_breakdown:
-            shopping_spend = cat_breakdown['Shopping']
-            shopping_pct = (shopping_spend / total_filtered_spend) * 100
-            if shopping_pct > 15:
-                shopping_cards = debit_df[debit_df['category'] == 'Shopping']['source_card'].unique()
-                # Check if they are using a non-optimized card (e.g., Generic)
-                if any('generic' in str(card).lower() for card in shopping_cards):
-                    tips.append("🛍️ **High Shopping Spend:** You're using a generic card for shopping. Tip: Suggest using Amazon Pay ICICI (for Amazon) or Flipkart Axis (for Flipkart) to maximize rewards.")
+        if not debit_df.empty:
+            # Category breakdown
+            cat_breakdown = debit_df.groupby('category')['amount'].sum()
+            total_filtered_spend = cat_breakdown.sum()
 
-        # 3. Fuel Tip
-        if 'Fuel' in cat_breakdown:
-            fuel_cards = debit_df[debit_df['category'] == 'Fuel']['source_card'].unique()
-            if not any('sbi' in str(card).lower() for card in fuel_cards):
-                tips.append("⛽ **Fuel Spends Detected:** Tip: You are not using an SBI card for fuel. Consider the SBI BPCL card for better fuel surcharges and rewards.")
+            # 1. Food & Dining Tip
+            if 'Food & Dining' in cat_breakdown:
+                food_spend = cat_breakdown['Food & Dining']
+                food_pct = (food_spend / total_filtered_spend) * 100
+                if food_pct > 20:
+                    # Check cards used for Food & Dining
+                    food_cards = debit_df[debit_df['category'] == 'Food & Dining']['source_card'].unique()
+                    if not any('hdfc millenia' in str(card).lower() for card in food_cards):
+                        tips.append("🍔 **High Dining Spend Detected:** Your Food & Dining spend is over 20% of your total expenses. Tip: Move your Dining/Swiggy/Zomato spends to HDFC Millenia for 5% cashback.")
 
-    if tips:
-        for tip in tips:
-            st.warning(tip)
-    else:
-        st.success("You are spending optimally based on our current checks! Good job.")
+            # 2. Shopping Tip
+            if 'Shopping' in cat_breakdown:
+                shopping_spend = cat_breakdown['Shopping']
+                shopping_pct = (shopping_spend / total_filtered_spend) * 100
+                if shopping_pct > 15:
+                    shopping_cards = debit_df[debit_df['category'] == 'Shopping']['source_card'].unique()
+                    # Check if they are using a non-optimized card (e.g., Generic)
+                    if any('generic' in str(card).lower() for card in shopping_cards):
+                        tips.append("🛍️ **High Shopping Spend:** You're using a generic card for shopping. Tip: Suggest using Amazon Pay ICICI (for Amazon) or Flipkart Axis (for Flipkart) to maximize rewards.")
 
-    st.markdown("---")
+            # 3. Fuel Tip
+            if 'Fuel' in cat_breakdown:
+                fuel_cards = debit_df[debit_df['category'] == 'Fuel']['source_card'].unique()
+                if not any('sbi' in str(card).lower() for card in fuel_cards):
+                    tips.append("⛽ **Fuel Spends Detected:** Tip: You are not using an SBI card for fuel. Consider the SBI BPCL card for better fuel surcharges and rewards.")
 
-    # --- Recent Transactions ---
-    st.subheader("Recent Transactions")
-
-    # Sort the table by date descending
-    recent_transactions = filtered_df.sort_values('date', ascending=False).copy()
-
-    # Format amount for display in the dataframe without modifying the numeric data type if possible,
-    # but Streamlit's style can be applied, or we can just round/format the column.
-    if 'amount' in recent_transactions.columns:
-        # Instead of replacing the column with a string which might break sorting/filtering,
-        # Streamlit 1.23+ st.dataframe allows pandas Styler for formatting
-        styled_df = recent_transactions.style.format({
-            "amount": lambda x: f"₹{x:,.2f}"
-        })
-        st.dataframe(styled_df, use_container_width=True)
-    else:
-        st.dataframe(recent_transactions, use_container_width=True)
+        if tips:
+            for tip in tips:
+                st.warning(tip)
+        else:
+            st.success("You are spending optimally based on our current checks! Good job.")
 
 if __name__ == "__main__":
     main()

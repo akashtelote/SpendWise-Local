@@ -8,26 +8,49 @@ MAPPING_FILE = Path("data/category_mapping.json")
 DB_PATH = Path("data/processed/expenses.db")
 
 def ensure_mapping_file():
-    """Generates a default category mapping JSON if it does not exist."""
+    """Generates a default category mapping JSON or merges new defaults if missing."""
     MAPPING_FILE.parent.mkdir(parents=True, exist_ok=True)
+    default_mapping = {
+        "zomato": "Food & Dining",
+        "swiggy": "Food & Dining",
+        "amazon": "Shopping",
+        "flipkart": "Shopping",
+        "uber": "Travel",
+        "ola": "Travel",
+        "mmt": "Travel",
+        "indigo": "Travel",
+        "irctc": "Travel",
+        "ixigo": "Travel",
+        "airtel": "Utilities",
+        "jio": "Utilities",
+        "netflix": "Entertainment",
+        "spotify": "Entertainment",
+        "insurance": "Insurance",
+        "rent": "Rent"
+    }
+
     if not MAPPING_FILE.exists():
-        default_mapping = {
-            "zomato": "Food & Dining",
-            "swiggy": "Food & Dining",
-            "amazon": "Shopping",
-            "flipkart": "Shopping",
-            "uber": "Travel",
-            "ola": "Travel",
-            "airtel": "Utilities",
-            "jio": "Utilities",
-            "netflix": "Entertainment",
-            "spotify": "Entertainment",
-            "insurance": "Insurance",
-            "rent": "Rent"
-        }
         with MAPPING_FILE.open('w') as f:
             json.dump(default_mapping, f, indent=4)
         print(f"Created default category mapping at {MAPPING_FILE}")
+    else:
+        # Smart Category Merging: load existing and append missing defaults
+        try:
+            with MAPPING_FILE.open('r') as f:
+                existing_mapping = json.load(f)
+
+            updated = False
+            for k, v in default_mapping.items():
+                if k not in existing_mapping:
+                    existing_mapping[k] = v
+                    updated = True
+
+            if updated:
+                with MAPPING_FILE.open('w') as f:
+                    json.dump(existing_mapping, f, indent=4)
+                print(f"Updated category mapping at {MAPPING_FILE} with missing default keywords.")
+        except Exception as e:
+            print(f"[WARNING] Could not read/update existing {MAPPING_FILE}: {e}")
 
 def load_mapping():
     """Loads the category mapping from the JSON file."""
