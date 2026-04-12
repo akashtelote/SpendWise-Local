@@ -66,6 +66,7 @@ def main():
     st.sidebar.header("Controls")
     if st.sidebar.button("Refresh Data", use_container_width=True):
         run_pipeline()
+        st.cache_data.clear()
 
     df = load_data()
 
@@ -73,16 +74,20 @@ def main():
         st.warning("No data found. Please ensure the pipeline has run and generated data.")
         return
 
+    st.sidebar.markdown(f"**Database Status:** {len(df)} total records")
+
     # Date Range Filter
     st.sidebar.subheader("Filters")
     from datetime import date, timedelta
     today = date.today()
+
+    # Ensure date bounds are calculated from datetime objects
+    df['date'] = pd.to_datetime(df['date'])
     df_min_date = df['date'].min().date()
-    df_max_date = df['date'].max().date()
 
     # Calculate resilient bounds
-    slider_min_value = min(df_min_date, today - timedelta(days=60))
-    slider_max_value = max(df_max_date, today)
+    slider_min_value = df_min_date
+    slider_max_value = today
     default_start = max(df_min_date, today - timedelta(days=60))
 
     date_range = st.sidebar.date_input(
@@ -178,13 +183,13 @@ def main():
         # Bar Chart: Monthly Cashflow (Income vs Expenses)
         cashflow_df = filtered_df.copy()
         if not cashflow_df.empty:
-            cashflow_df['YearMonth'] = cashflow_df['date'].dt.strftime('%Y-%m')
+            cashflow_df['yearmonth'] = cashflow_df['date'].dt.strftime('%Y-%m')
             # Group by Month and Transaction_Type
-            monthly_cf = cashflow_df.groupby(['YearMonth', 'transaction_type'])['amount'].sum().reset_index()
+            monthly_cf = cashflow_df.groupby(['yearmonth', 'transaction_type'])['amount'].sum().reset_index()
 
             fig_bar = px.bar(
                 monthly_cf,
-                x='YearMonth',
+                x='yearmonth',
                 y='amount',
                 color='transaction_type',
                 barmode='group',
@@ -205,51 +210,20 @@ def main():
         weekly_df = debit_df.copy()
 
         # Determine the start of the week for each date
-        weekly_df['Week'] = weekly_df['date'].dt.to_period('W').dt.start_time
+        weekly_df['week'] = weekly_df['date'].dt.to_period('W').dt.start_time
 
-        weekly_spend = weekly_df.groupby('Week')['amount'].sum().reset_index()
-        weekly_spend = weekly_spend.sort_values('Week')
+        weekly_spend = weekly_df.groupby('week')['amount'].sum().reset_index()
+        weekly_spend = weekly_spend.sort_values('week')
 
-        # Calculate daily sum for 7-day rolling average
-        daily_spend = debit_df.groupby('date')['amount'].sum().reset_index()
-        daily_spend = daily_spend.sort_values('date')
-
-        # Reindex to ensure missing days have 0 spend before rolling average
-        all_days = pd.date_range(start=daily_spend['date'].min(), end=daily_spend['date'].max())
-        daily_spend = daily_spend.set_index('date').reindex(all_days, fill_value=0).reset_index()
-        daily_spend = daily_spend.rename(columns={'index': 'date'})
-
-        daily_spend['7-Day Rolling Avg'] = daily_spend['amount'].rolling(window=7, min_periods=1).mean()
-
-        # Create a figure with secondary y-axis style using plotly graph objects to overlay line and bar
-        fig_trend = go.Figure()
-
-        # Add Weekly Spend Bars
-        fig_trend.add_trace(go.Bar(
-            x=weekly_spend['Week'],
-            y=weekly_spend['amount'],
-            name='Weekly Spend',
-            marker_color='red',
-            opacity=0.7
-        ))
-
-        # Add 7-Day Rolling Average Line
-        fig_trend.add_trace(go.Scatter(
-            x=daily_spend['date'],
-            y=daily_spend['7-Day Rolling Avg'],
-            name='7-Day Rolling Avg',
-            mode='lines',
-            line=dict(color='blue', width=2)
-        ))
-
-        fig_trend.update_layout(
-            title="Weekly Spend Pattern with 7-Day Trend",
-            xaxis_title="Date",
-            yaxis_title="Amount",
-            barmode='group',
-            hovermode='x unified'
+        # Create a simple Bar chart for weekly spend
+        fig_trend = px.bar(
+            weekly_spend,
+            x='week',
+            y='amount',
+            title="Weekly Spend Pattern",
+            labels={'week': 'Week', 'amount': 'Amount'}
         )
-
+        fig_trend.update_traces(marker_color='red', opacity=0.7)
         st.plotly_chart(fig_trend, use_container_width=True)
     else:
         st.info("No expense data available in the selected range to show weekly patterns.")
